@@ -1,0 +1,1504 @@
+---
+title: "SPEI"
+author: "Nathalie Adenot"
+date: "2023-02-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, comment = FALSE, warning = FALSE)
+```
+
+## Choice: why the SPEI  
+The SPEI (Standardized Precipitation Evapotranspiration Index) is one of the most widely used drought index and is considered to be the best (revoir biblio pour compléter précisément).  
+
+
+## Computation  
+The SPEI uses the monthly (or weekly) difference between **precipitation** and **Potential Evapotranspiration (PET)** (Vicente-Serrano et al., 2010).
+
+It can be computed using the spei() function of the SPEI package on R (cf https://cran.r-project.org/web/packages/SPEI/SPEI.pdf).  
+This package also allows to estimate Potential Evapotranspiration (PET) using several methods.
+
+Functions:  
+- **spei()**: "The input variable is a time ordered series of the climatic water balance (precipitation minus potential evapotranspiration)  
+
+*There are specific functions to estimate potential evapotranspiration:*    
+- **thornthwaite()**: the simplest of the three methods, can be used when only mean temperature data are available.
+- **hargreaves()**: requires data on the mean external radiation, Ra, but if Ra is not available it can be estimated from the latitude and the month of the year.
+- **penman()**: widely considered the most accurate method for estimating ETo, and is the method recommended by the FAO, but requires more data:
+* incoming solar radiation, Rs or sunshine duration tsun, or percent cloud cover CC
+* saturation water pressure, or the dew point temperature Tdew, the relative humidity RH or even the minimum temperature Tmin (sorted from least to most uncertain method).
+* atmospheric surface pressure P, or the atmospheric pressure at sea level P0 and the elevation z
+(+ wind speed and CO2 atmospheric concentration).  
+
+## Climate data  
+We first need to get precipitation data to compute SPEI.  
+I will use the same source as Paul Cuchot, who kindly gave me the data and script to get temperature and precipitation data from the SAFRAN model:
+"The SAFRANsystem is an analysis system for surface variables which provides climatic data to coverFrance   including   air   temperature and rainfall on an 8 km*8 km grid. SAFRAN does interpolation by taking into account all of the observed data from Metéo-France’s observation network and data from some well instrumented stations within and around the area under study (1000 stations in total for temperature and more than 3500 for precipitation). Data are calibrated by the meteorological model which includes an analysis of atmospheric models (ARPEGE or ECMWF from Metéo-France). It has been shown that the temperature and the precipitation analyses were robust and not biased by Quintana-Seguí (2008) who presented adetailed description and assessment of the SAFRAN analysis over France." (Aloïs Robert)
+
+### Extract climate data  
+The data files are very heavy, so we need to divide climate data into several files (one file per decade)
+
+```{r, echo=FALSE, eval=FALSE}
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(tmap)
+library(sf)
+library(terra)
+library(patchwork)
+library(mapview)
+library(raster)
+library(data.table)
+######## Load climate data to get values for each month and each simulated meteo station ##########
+meteo90_99 <- fread("C:/Users/nadenot/Documents/Stage/Drought/Climate/meteo/SIM2_1990_1999.csv")
+
+meteo <- meteo90_99%>%
+  # keep only one point per site ("simulated meteo station")
+  dplyr::distinct(LAMBX,LAMBY, .keep_all = TRUE)
+# There is a missing value in coordinates row 9893:
+meteo <- meteo[complete.cases(meteo$LAMBX),]
+
+# Limits france (to spatially delimitate data)
+fr <- getData('GADM', country='FRA', level=1)%>%
+  st_as_sf()%>%
+  st_union()
+
+# Convert coordinates into numeric vectors
+meteo_num <- meteo
+meteo_num$LAMBX <- as.numeric(meteo_num$LAMBX)
+meteo_num$LAMBY <- as.numeric(meteo_num$LAMBY)
+meteo_num <- meteo_num[complete.cases(meteo_num$LAMBX),] #delete missing values (1 NA)
+meteo_num <- meteo_num[complete.cases(meteo_num$LAMBY),]
+
+# give an ID to each square (land surface) of data
+meteo_full <- meteo_num %>%
+  mutate(
+    LAMBY2 = LAMBY * 100,  # there was a issue with coordinates
+    LAMBX2 =  LAMBX * 100, # I don't know why, but it need to be x100
+    ID = as.character(1:nrow(meteo_num)))%>%
+  dplyr::select(LAMBX,LAMBY,LAMBX2, LAMBY2, ID)%>% 
+  # st_as_sf(coords = c("LAMBX", "LAMBY")) %>% 
+  st_as_sf(coords = c("LAMBX2", "LAMBY2")) %>% 
+  st_set_crs(27572)%>%
+  st_transform(4326)%>%
+  # filter dots in france
+  st_intersection(fr)
+
+
+#################   Pair STOC station with meteo station    ####################
+
+# find closest point
+dataSTOC <- fread("C:/git/STOC_reporting-master/data_DB/data.csv")
+dataSTOC <- dataSTOC[,c("ID_PROG", "LON", "LAT")]
+
+data_ <- dataSTOC%>%
+  distinct(ID_PROG, .keep_all = TRUE)%>%
+  drop_na(LAT,LON)%>%  # remove sites with no coordinates
+  st_as_sf(coords = c("LON","LAT"),
+           crs = "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+data_ <- st_transform(data_, st_crs(meteo_full)) # data_ is a spatial object (package sf) with all capture sites
+
+data_l <- list() ; k = 1
+
+for(i in unique(data_$ID_PROG)){ 
+  if(!is.na(i)){
+    data_l[[k]] <- data_%>%
+      filter(ID_PROG == i)
+    near_ID <- st_nearest_feature(data_l[[k]][1,], meteo_full)
+    data_l[[k]]$met_stat <- 
+      as.character(as.data.frame(meteo_full)[near_ID,"ID"])
+  }
+  k = k+1
+} 
+
+# met stat gives the ID of nearest meteo records for each STOC station
+data_s <- bind_rows(data_l)
+
+# meteo sites only for each STOC station
+meteo_stoc <- meteo_full%>%
+  filter(meteo_full$ID %in% unique(data_s$met_stat))
+
+
+################    Associate climate data with STOC stations    ###############
+
+#############
+# 1990-1999 #
+#############
+
+met2_1990_1999 <- meteo90_99%>%
+  mutate(DATE2 = lubridate::ymd(DATE),
+         d = lubridate::yday(DATE2),
+         an = lubridate::year(DATE2), 
+         mo = lubridate::month(DATE2))%>%
+  dplyr::select(LAMBX,LAMBY,DATE,DATE2,d,an,mo,T_Q, PRELIQ_Q, ETP_Q, EVAP_Q)%>%
+  # T_Q = temperature
+  # PRELIQ_Q = précipitations liquides (rainfall)
+  # ETP_Q = Evapotranspiration potentielle
+  mutate(LAMBX = as.numeric(LAMBX)) %>% 
+  mutate(LAMBY = as.numeric(LAMBY)) %>% 
+#  filter(mo<8 & mo>3)%>% #keep data from April to July
+  left_join(as.data.frame(meteo_full)[,c("LAMBY","LAMBX","ID")])%>%
+  filter(ID %in% unique(data_s$met_stat))%>%
+  mutate(ID_an = paste(ID, an, sep = "_"))
+
+#Add ID_PROG
+data_stoc_met <- data.frame(data_s$ID_PROG, data_s$met_stat)
+colnames(data_stoc_met) <- c("ID_PROG", "met_stat")
+met3_1990_1999 <- left_join(met2_1990_1999, data_stoc_met, by = c("ID" = "met_stat"))
+# Plusieurs stations STOC ont la même station météo de référence, 
+#ce qui explique que met3_2000_2009 a plus de lignes que met2_2000_2009 
+
+# Save
+write.csv(met3_1990_1999, file ="C:/git/STOC/Variables/data/meteo90_99.csv", row.names = FALSE)
+#remove meteo90_99 to save some memory space
+rm(meteo90_99, met2_1990_1999, met3_1990_1999)
+
+
+#############
+# 2000-2009 #
+#############
+
+# Load 2000-2009 data
+meteo00_09 <- fread("C:/Users/nadenot/Documents/Stage/Drought/Climate/meteo/SIM2_2000_2009.csv")
+
+# need to do it for each period because take too much memory
+met2_2000_2009 <- meteo00_09%>%
+  mutate(DATE2 = lubridate::ymd(DATE),
+         d = lubridate::yday(DATE2),
+         an = lubridate::year(DATE2), 
+         mo = lubridate::month(DATE2))%>%
+  dplyr::select(LAMBX,LAMBY,DATE,DATE2,d,an,mo,T_Q, PRELIQ_Q, ETP_Q, EVAP_Q)%>%
+  mutate(LAMBX = as.numeric(LAMBX)) %>% 
+  mutate(LAMBY = as.numeric(LAMBY)) %>% 
+#  filter(mo<8 & mo>3)%>%
+  left_join(as.data.frame(meteo_full)[,c("LAMBY","LAMBX","ID")])%>%
+  filter(ID %in% unique(data_s$met_stat))%>%
+  mutate(ID_an = paste(ID, an, sep = "_"))
+
+#Add ID_PROG
+data_stoc_met <- data.frame(data_s$ID_PROG, data_s$met_stat)
+colnames(data_stoc_met) <- c("ID_PROG", "met_stat")
+met3_2000_2009 <- left_join(met2_2000_2009, data_stoc_met, by = c("ID" = "met_stat"))
+
+# Save
+write.csv(met3_2000_2009, file ="C:/git/STOC/Variables/data/meteo00_09.csv", row.names = FALSE)
+#remove data to save some memory space
+rm(meteo00_09, met2_2000_2009, met3_2000_2009)
+
+
+#############
+# 2010-2019 #
+#############
+
+meteo10_19 <- fread("C:/Users/nadenot/Documents/Stage/Drought/Climate/meteo/SIM2_2010_2019.csv")
+
+met2_2010_2019 <- meteo10_19%>%
+  mutate(DATE2 = lubridate::ymd(DATE),
+         d = lubridate::yday(DATE2),
+         an = lubridate::year(DATE2), 
+         mo = lubridate::month(DATE2))%>%
+  dplyr::select(LAMBX,LAMBY,DATE,DATE2,d,an,mo,T_Q, PRELIQ_Q, ETP_Q, EVAP_Q)%>%
+  mutate(LAMBX = as.numeric(LAMBX)) %>% 
+  mutate(LAMBY = as.numeric(LAMBY)) %>% 
+#  filter(mo<8 & mo>3)%>%
+  left_join(as.data.frame(meteo_full)[,c("LAMBY","LAMBX","ID")])%>%
+  filter(ID %in% unique(data_s$met_stat))%>%
+  mutate(ID_an = paste(ID, an, sep = "_"))
+
+#Add ID_PROG
+data_stoc_met <- data.frame(data_s$ID_PROG, data_s$met_stat)
+colnames(data_stoc_met) <- c("ID_PROG", "met_stat")
+met3_2010_2019 <- left_join(met2_2010_2019, data_stoc_met, by = c("ID" = "met_stat"))
+
+# Save
+write.csv(met3_2010_2019, file ="C:/git/STOC/Variables/data/meteo10_19.csv", row.names = FALSE)
+#remove data to save some memory space
+rm(meteo10_19, met2_2010_2019, met3_2010_2019)
+
+
+#############
+# 2020-2022 #
+#############
+
+meteo20_22 <- fread("C:/Users/nadenot/Documents/Stage/Drought/Climate/meteo/SIM2_2020_202301.csv")
+
+met2_2020_2022 <- meteo20_22%>%
+  mutate(DATE2 = lubridate::ymd(DATE),
+         d = lubridate::yday(DATE2),
+         an = lubridate::year(DATE2), 
+         mo = lubridate::month(DATE2))%>%
+  dplyr::select(LAMBX,LAMBY,DATE,DATE2,d,an,mo,T_Q, PRELIQ_Q, ETP_Q, EVAP_Q)%>%
+  mutate(LAMBX = as.numeric(LAMBX)) %>% 
+  mutate(LAMBY = as.numeric(LAMBY)) %>% 
+#  filter(mo<8 & mo>3)%>%
+  left_join(as.data.frame(meteo_full)[,c("LAMBY","LAMBX","ID")])%>%
+  filter(ID %in% unique(data_s$met_stat))%>%
+  mutate(ID_an = paste(ID, an, sep = "_"))
+
+#Add ID_PROG
+data_stoc_met <- data.frame(data_s$ID_PROG, data_s$met_stat)
+colnames(data_stoc_met) <- c("ID_PROG", "met_stat")
+met3_2020_2022 <- left_join(met2_2020_2022, data_stoc_met, by = c("ID" = "met_stat"))
+
+# Save
+write.csv(met3_2020_2022, file ="C:/git/STOC/Variables/data/meteo20_22.csv", row.names = FALSE)
+#remove data to save some memory space
+rm(meteo20_22, met2_2020_2022, met3_2020_2022)
+
+
+### Bind all time periods
+meteo90_99 <- fread("C:/git/STOC/Variables/data/meteo90_99.csv")
+meteo00_09 <- fread("C:/git/STOC/Variables/data/meteo00_09.csv")
+meteo10_19 <- fread("C:/git/STOC/Variables/data/meteo10_19.csv")
+meteo20_22 <- fread("C:/git/STOC/Variables/data/meteo20_22.csv")
+
+meteo <- rbind(meteo90_99, meteo00_09, meteo10_19, meteo20_22)
+meteo <- meteo %>% arrange(ID_PROG)
+# write.csv(meteo, file ="C:/git/STOC/Variables/data/meteo_all_year.csv", row.names = FALSE)
+
+head(meteo)
+```
+
+We get a dataframe with daily temperature (*T_Q*), precipitation (*PRELIQ_Q*) and PET (*ETP_Q*) for each station from April to July. 
+
+
+
+## Use spei() function  
+
+**Input data**  
+data = climatic balance precipitation minus potential evapotranspiration. 
+In our case, it will be a matrix with sites as columns and all values of ndvi as rows
+
+We now have values for precipitation and potential evapotranspiration so we are able to use the spei() function. 
+But we have daily values and spei() is made for monthly values. We could calculate monthly averages but we don't want to loose information and the temporal grain.  
+
+```{r example data, echo=FALSE, eval=FALSE}
+# Install package
+# From GitHub
+#library(devtools)
+#install_github('sbegueria/SPEI')
+# From CRAN
+#install.packages('SPEI')
+
+library(SPEI)
+
+## Example data
+
+data(wichita)
+names(wichita)
+summary(wichita)
+# data(cruts4)
+# summary(cruts4)
+
+# Compute potential evapotranspiration (PET) and climatic water
+# balance (BAL).
+wichita$PET <- thornthwaite(wichita$TMED, 37.6475)
+wichita$BAL <- wichita$PRCP - wichita$PET
+# Convert to a ts (time series) for convenience
+wichita <- ts(wichita[, -c(1, 2)], end = c(2011, 10), frequency = 12)
+plot(wichita)
+# One and twelve-months SPEI
+spei1 <- spei(wichita[, "BAL"], 1)
+spei12 <- spei(wichita[, "BAL"], 12)
+class(spei1)
+plot(spei1)
+plot(spei12)
+# Extract information from `spei` object: summary, call function,
+# fitted values, and coefficients
+summary(spei1)
+summary(spei12)
+names(spei1)
+spei1$call
+spei1$fitted
+spei1$coefficients
+# Plot `spei` object
+par(mfrow = c(2, 1))
+plot(spei1, main = "Wichita, SPEI-1")
+plot(spei12, main = "Wichita, SPEI-12")
+
+# Time series not starting in January
+plot(spei(ts(wichita[, "BAL"], freq = 12, start = c(1980, 6)), 12))
+
+
+# Matrix input (computing data from several stations at one)
+# Dataset `balance` contains time series of the climatic water balance at
+# 12 locations. Note that input must be provided as matrix.
+data(balance)
+head(balance)
+bal_spei12 <- spei(as.matrix(balance), 12)
+plot(bal_spei12)
+
+bal12df <- as.data.frame(bal_spei12$fitted)
+# on a bien 1 colonne par locality
+
+```
+
+#### Compute monthly SPEI values  
+
+```{r monthly SPEI, echo=FALSE, eval=FALSE}
+library(tidyverse)
+# load data
+meteo <- read.csv("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+## Compute monthly mean values  
+meteo_mean <- meteo %>% 
+  group_by(ID_PROG, an, mo) %>% 
+  summarise(avg_T = mean(T_Q), avg_P = mean(PRELIQ_Q), avg_PET = mean(ETP_Q))
+
+# Calculate water balance
+meteo_mean$BAL <- meteo_mean$avg_P - meteo_mean$avg_PET
+
+# Transform data to have stations as columns and water balance values
+meteo_t_mean <- meteo_mean %>% 
+  distinct() %>% 
+  dplyr::select(an, mo, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+# Test with 1 site
+meteo_ts <- ts(meteo_t_mean[,3],     # random data, only 1 site
+           start = c(1990, 1), 
+           frequency = 12)
+spei_ts <- spei(meteo_ts, 1)
+
+plot(spei_ts)
+# Extract information from `spei` object: summary, call function,
+# fitted values, and coefficients
+summary(spei_ts)
+spei_ts$fitted
+
+# With all sites
+meteo_ts_all <- ts(as.matrix(meteo_t_mean[,-c(1,2)]),     # random data, only 1 site
+           start = c(1990, 1), 
+           frequency = 12)
+spei_ts_all <- spei(as.matrix(meteo_t_mean[,-c(1,2)]), 1)
+spei_ts_all <- spei(meteo_ts_all, 1)
+
+
+plot(spei_ts_all) # on voit rien mais ça marche
+# Extract information from `spei` object: summary, call function,
+# fitted values, and coefficients
+# summary(spei_ts_all)
+# names(spei_ts)
+# spei_ts$call
+# spei_ts$fitted
+# spei_ts$coefficients
+
+spei_data <- as.data.frame(spei_ts_all$fitted) # On a bien 1 colonne par site
+
+# Add temporal information
+spei_data <- cbind(meteo_t_mean$an, meteo_t_mean$mo, spei_data)
+colnames(spei_data)[1:2] <- c("Year", "Month")
+
+# write.csv(spei_data, file = "C:/git/STOC/Variables/data/spei_month1.csv", row.names = FALSE)
+```
+
+I will also create a file with a single SPEI value per year computed over the 4 spring months to compare with other studies. 
+I need to check whether the different ways of computing SPEI give correlated variables, and if using them in models to study its effect on productivity give similar results.  
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(SPEI)
+# load data
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+## Compute monthly mean values 
+# I don't want to consider "real" months (from 1st to 30th) but rather month that would match our data: from 15 march to 15 July
+meteo_15 <- meteo %>% 
+  # filter(d>74 & d<197) %>% #keep data from 15/03 to 15/07  (In the end I will filter later because I need all months to make a time series to compute spei)
+  mutate(month15 = ifelse(day(DATE2)<=15, mo, mo + 1)) #attribute a new "month" number
+# here month15 = 1 is from 01/01 to 14/01 ; month15 = 2 from 15/01 to 14/02 etc. 
+meteo_mean <- meteo_15 %>% 
+  group_by(ID_PROG, an, month15) %>% 
+  summarise(avg_T = mean(T_Q), avg_P = mean(PRELIQ_Q), avg_PET = mean(ETP_Q))
+
+# Calculate water balance
+meteo_mean$BAL <- meteo_mean$avg_P - meteo_mean$avg_PET
+
+# Transform data to have stations as columns and water balance values
+meteo_t_mean <- meteo_mean %>% 
+  distinct() %>% 
+  dplyr::select(an, month15, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+
+# Get SPEI for all sites
+meteo_ts_all <- ts(as.matrix(meteo_t_mean[,-c(1,2)]),    
+           start = c(1990, 1), 
+           frequency = 12)
+# spei_ts_all <- spei(as.matrix(meteo_t_mean[,-c(1,2)]), 1)
+spei_ts_all <- spei(meteo_ts_all, 4) #computed over 4 "months" 
+
+
+plot(spei_ts_all) # on voit rien mais ça marche
+# Extract information from `spei` object: summary, call function,
+# fitted values, and coefficients
+# summary(spei_ts_all)
+# names(spei_ts)
+# spei_ts$call
+# spei_ts$fitted
+# spei_ts$coefficients
+
+spei_data <- as.data.frame(spei_ts_all$fitted) # On a bien 1 colonne par site
+
+# Add temporal information
+spei_data <- cbind(meteo_t_mean$an, meteo_t_mean$month15, spei_data)
+colnames(spei_data)[1:2] <- c("Year", "Month15")
+
+# We are only interested in spring SPEI, computed from 15/03 to 15/07, which corresponds to month15 = 7 (ends in July)
+spring_spei <- spei_data %>% filter(Month15 == 7)
+
+# Put ID_PROG as a variable
+spring_spei <- spring_spei %>% 
+  pivot_longer(cols = 3:391, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  arrange(ID_PROG) %>% 
+  na.locf() #replace NAs by previous value (if NAs)
+
+write.csv(spring_spei, file = "C:/git/STOC/Variables/data/spei_month4.csv", row.names = FALSE)
+```
+
+
+
+#### Compute daily SPEI values
+
+**See how to modify the function to use daily values**   
+As the script is quite long, I opened it in a separate script (spei_modif.R).
+Before modifying it, I first try the function after converting my data to a time series.
+
+```{r daily SPEI, eval=FALSE, echo=FALSE}
+library(tidyverse)
+# load data
+meteo <- read.csv("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+# Calculate water balance
+meteo$BAL <- meteo$PRELIQ_Q - meteo$ETP_Q
+
+# Transform data to have stations as columns and water balance values
+meteo_t <- meteo %>% 
+  distinct() %>% 
+#  filter(an == 2020) %>% 
+  dplyr::select(DATE2, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+# Test with 1 site
+# meteo_ts <- ts(meteo_t[,2],     # random data, only 1 site
+#            start = c(1990, 1), 
+#            frequency = 365)
+# spei_ts <- spei(meteo_ts, 30) # computed on 30 days
+
+# plot(as.vector(time(meteo_ts)), as.vector(meteo_ts), type = "l")
+
+# plot(spei_ts)
+# # Extract information from `spei` object: summary, call function,
+# # fitted values, and coefficients
+# summary(spei_ts)
+# names(spei_ts)
+# spei_ts$call
+# spei_ts$fitted
+# spei_ts$coefficients
+
+# With all sites
+meteo_ts_all <- ts(as.matrix(meteo_t[,-1]),     # random data, only 1 site
+           start = c(1990, 1), 
+           frequency = 365)
+spei_ts_all <- spei(meteo_ts_all, 1)
+# spei_ts_all30 <- spei(meteo_ts_all, 30)
+
+
+plot(spei_ts_all) # on voit rien mais ça marche
+# Extract information from `spei` object: summary, call function,
+# fitted values, and coefficients
+summary(spei_ts_all)
+names(spei_ts_all)
+spei_ts_all$call
+spei_ts_all$fitted
+spei_ts_all$coefficients
+
+spei_data_day <- as.data.frame(spei_ts_all$fitted) 
+# spei_data_day30 <- as.data.frame(spei_ts_all30$fitted) 
+
+
+# Add temporal information
+spei_data_day_ <- cbind(meteo_t$DATE2, spei_data_day)
+colnames(spei_data_day_)[1] <- "Date"
+# spei_data_day_30 <- cbind(meteo_t$DATE2, spei_data_day30)
+# colnames(spei_data_day_30)[1] <- "Date"
+
+# write.csv(spei_data_day_, file = "C:/git/STOC/Variables/data/spei_day1.csv", row.names = FALSE)
+# write.csv(spei_data_day_30, file = "C:/git/STOC/Variables/data/spei_day30.csv", row.names = FALSE)
+
+```
+
+
+#### Temporal evolution  
+
+We want to plot the SPEI across the year to see if it remains stable or if there is a seasonal pattern: if there is a real standardization of the SPEI, accounting for temporal variation of dry conditions, it should remain stable. But I think it only takes into account the inter-annual variation and there is still a seasonnal pattern.  
+If it is the case, then we want to compute anomalies for each day, to only give information on whether this day was dryer or wetter than usual.  
+
+```{r temporal trends daily, echo=FALSE}
+library(data.table)
+library(lubridate)
+library(tidyverse)
+
+# import data  
+spei <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+
+spei <- spei %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  dplyr::filter(SPEI != -Inf) %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(JDay = yday(Date))
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+years <- c(2010, 2015, 2022)
+
+require(scales)
+# Plot
+for(ss in sites){
+  for(year in years){
+    spei_plot <- subset(spei, ID_PROG == ss & YEAR == year)
+
+    gg <- ggplot(data = spei_plot, aes(x = Date, y = SPEI)) +
+    geom_point() +
+    scale_x_date(breaks = date_breaks("months"),  labels = date_format("%b")) +
+    # scale_x_discrete(breaks = c("1", "32", "60", "91", "121", "152", "182", "213", "244", "274", "305", "335"), labels = c("1" = "01/01", "32" = "01/02", "60" = "01/03", "91" = "01/04", "121" = "01/05", "152" = "01/06", "182" = "01/07", "213" = "01/08", "244" = "01/09", "274" = "01/10", "305" = "01/11", "335" = "01/12")) +
+    geom_smooth(se = TRUE) +
+    ggtitle(paste("Evolution of SPEI for the site ", ss, "in ", year)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+  }
+}
+```
+
+Les données sont très bruitées, donc je vais tester de plotter les données mensuelles:  
+
+```{r temporal trends sliding window 30}
+library(data.table)
+library(lubridate)
+
+# import data  
+spei30 <- fread("C:/git/STOC/Variables/data/spei_day30.csv")
+
+spei30 <- spei30 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  dplyr::filter(SPEI != -Inf) %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(JDay = yday(Date))
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+years <- c(2010, 2015, 2022)
+
+require(scales)
+# Plot
+for(ss in sites){
+  for(year in years){
+    spei_plot <- subset(spei30, ID_PROG == ss & YEAR == year)
+    gg <- ggplot(data = spei_plot, aes(x = Date, y = SPEI)) +
+    geom_point() +
+    scale_x_date(breaks = date_breaks("months"),  labels = date_format("%b")) +
+    # scale_x_discrete(breaks = c("1", "32", "60", "91", "121", "152", "182", "213", "244", "274", "305", "335"), labels = c("1" = "01/01", "32" = "01/02", "60" = "01/03", "91" = "01/04", "121" = "01/05", "152" = "01/06", "182" = "01/07", "213" = "01/08", "244" = "01/09", "274" = "01/10", "305" = "01/11", "335" = "01/12")) +
+    geom_smooth(se = TRUE) +
+    ggtitle(paste("Evolution of SPEI for the site ", ss, "in ", year)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+  }
+}
+```
+
+Trends are already more visible using the 30-day window.  
+I will now plot with the monthly values
+
+```{r month}
+# import data  
+spei_month <- fread("C:/git/STOC/Variables/data/spei_month1.csv")
+
+spei_month <- spei_month %>% 
+  pivot_longer(cols = 3:408, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(Date = paste(Month, Year, sep = "/")) 
+  # dplyr::filter(SPEI != -Inf) %>% 
+  # mutate(YEAR = as.factor(YEAR)) %>% 
+  # mutate(JDay = yday(Date))
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+years <- c(2010, 2015, 2022)
+
+require(scales)
+# Plot
+for(ss in sites){
+    spei_plot <- subset(spei_month, ID_PROG == ss)
+
+    gg <- ggplot(data = spei_plot, aes(x = as.factor(Month), y = SPEI)) +
+    geom_boxplot() +
+    scale_x_discrete(name = "Month") +
+    ggtitle(paste("Evolution of SPEI for the site ", ss)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+  
+}
+```
+
+Do we find the same thing if we average the daily SPEI values ?  
+
+```{r monthly mean from daily}
+
+# import data  
+spei <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+
+spei_mean <- spei %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  dplyr::filter(SPEI != -Inf) %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(Month = month(Date)) %>% 
+  group_by(ID_PROG, YEAR, Month) %>% 
+  summarise(mSPEI = mean(SPEI))
+  
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+years <- c(2010, 2015, 2022)
+
+require(scales)
+# Plot
+for(ss in sites){
+    spei_plot <- subset(spei_mean, ID_PROG == ss)
+
+    gg <- ggplot(data = spei_plot, aes(x = as.factor(Month), y = mSPEI)) +
+    geom_boxplot() +
+    scale_x_discrete(name = "Month") +
+    ggtitle(paste("Evolution of SPEI for the site ", ss)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+  
+}
+```
+
+We are only interested in spring values, so now I want to plot a boxplot for all years with daily values, but only for spring.  
+
+```{r spring boxplot}
+library(data.table)
+library(lubridate)
+library(tidyverse)
+
+# import data  
+spei <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+
+spei <- spei %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  dplyr::filter(SPEI != -Inf) %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(JDay = yday(Date)) %>% 
+  dplyr::filter(JDay > 90 & JDay <196) 
+
+
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+
+require(scales)
+# Boxplot
+for(ss in sites){
+    spei_plot <- subset(spei, ID_PROG == ss)
+
+    gg <- ggplot(data = spei_plot, aes(x = as.factor(JDay), y = SPEI)) +
+    geom_boxplot() +
+    scale_x_discrete(breaks = c("91", "121", "152", "182"), labels = c("91" = "01/04", "121" = "01/05", "152" = "01/06", "182" = "01/07")) +
+    ggtitle(paste("Evolution of SPEI for the site ", ss)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+}
+
+# GAM with ggplot
+for(ss in sites){
+    spei_plot <- subset(spei, ID_PROG == ss)
+
+    gg <- ggplot(data = spei_plot, aes(x = JDay, y = SPEI)) +
+    geom_point() +
+    geom_smooth(se = TRUE) +
+    ggtitle(paste("Evolution of SPEI for the site ", ss, "in ", year)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+}
+
+spei_plot <- subset(spei, ID_PROG %in% sites)
+spei_plot %>% 
+  ggplot(aes(x=JDay, y=SPEI)) +
+  geom_smooth() +
+  facet_wrap(~ID_PROG, scales = "free")
+
+
+library(ggplot2)
+theme_set(theme_bw())
+library(dplyr)
+library(mgcv)
+library(voxel)
+library(itsadug)
+require(tidymv)
+
+for(ss in sites){
+    spei_plot <- subset(spei, ID_PROG == ss)
+    model <- gamm(SPEI ~ s(JDay), random = list(YEAR = ~1),  data = spei_plot)
+    p <- plotGAMM(gammFit <- model, smooth.cov <- "JDay", plotCI <- T, rawOrFitted = "raw", groupCovs = NULL)
+    plot_smooth(model = model, view="JDay") 
+    plot(p)
+}
+```
+
+
+## Early/late SPEI  
+We first computed daily SPEI values to be able to use ClimWin and find the precise time window during which the SPEI had the main influence. But in the end we did not use Climwin, and ended up averaging daily SPEI values for early and late spring.  
+But it would actually be better to take into account the whole period to compute SPEI values, as it is done in other papers using the 4 spring months to get a spring SPEI values.  
+
+I have already computed a spring SPEI value, that I will be able to use to determine which years are extremely dry, and now I will compute SPEI for the 2 periods early/late spring.  
+To do that, I will use the phenology and see if I can use average monthly values, or if I have to use daily climate values.  
+
+The median hatching date is 14/05 (julian day 134)
+
+### Compute early and late SPEI  
+
+```{r}
+library(SPEI)
+library(lubridate)
+# load data
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+## Compute monthly mean values 
+# I don't want to consider "real" months (from 1st to 30th) but rather month that would match our data: from 14 march to 14 Mai 
+meteo_14 <- meteo %>% 
+  mutate(month14 = ifelse(day(DATE2)<=14, mo, ifelse(d >348, 1, mo + 1))) #attribute a new "month" number
+# here month14 = 1 is from 01/01 to 14/01 ; month14 = 2 from 15/01 to 14/02 etc. 
+# So early corresponds to month14 = 4 and 5 
+meteo_mean <- meteo_14 %>% 
+  group_by(ID_PROG, an, month14) %>% 
+  summarise(avg_T = mean(T_Q), avg_P = mean(PRELIQ_Q), avg_PET = mean(ETP_Q))
+
+# Calculate water balance
+meteo_mean$BAL <- meteo_mean$avg_P - meteo_mean$avg_PET
+
+# Transform data to have stations as columns and water balance values
+meteo_t_mean <- meteo_mean %>% 
+  distinct() %>% 
+  dplyr::select(an, month14, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+
+# Get SPEI for all sites
+meteo_ts_all <- ts(as.matrix(meteo_t_mean[,-c(1,2)]),    
+           start = c(1990, 1), 
+           frequency = 12)
+# spei_ts_all <- spei(as.matrix(meteo_t_mean[,-c(1,2)]), 1)
+spei_ts_all <- spei(meteo_ts_all, 2) #computed over 2 "months" 
+
+spei_data <- as.data.frame(spei_ts_all$fitted) # On a bien 1 colonne par site
+
+# Add temporal information
+spei_data <- cbind(meteo_t_mean$an, meteo_t_mean$month14, spei_data)
+colnames(spei_data)[1:2] <- c("Year", "Month14")
+
+# We are only interested in early spring SPEI, computed from 14/03 to 14/05, which corresponds to month14 = 5 (ends in May)
+early_spei <- spei_data %>% filter(Month14 == 5)
+
+# Late spring SPEI, computed from 14/05 to 14/07, which corresponds to month14 = 7 (ends in July)
+late_spei <- spei_data %>% filter(Month14 == 7)
+
+# Put ID_PROG as a variable
+early_spei <- early_spei %>% 
+  pivot_longer(cols = 3:391, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  arrange(ID_PROG) #%>%
+  # na.locf() #replace NAs by previous value (if NAs)
+
+write.csv(early_spei, file = "C:/git/STOC/Variables/data/early_spei_month2.csv", row.names = FALSE)
+
+late_spei <- late_spei %>% 
+  pivot_longer(cols = 3:391, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  arrange(ID_PROG)
+
+write.csv(late_spei, file = "C:/git/STOC/Variables/data/late_spei_month2.csv", row.names = FALSE)
+
+```
+
+
+Check the temporal distribution of SPEI computed this way.
+
+```{r}
+spei <- spei_data %>% 
+  pivot_longer(cols = 3:391, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(Date = paste(Month14, Year, sep = "/")) %>% 
+  arrange(ID_PROG)
+
+# Select a few sites  
+# 948: Mediterraneen
+# 204: PY
+# 1014 Bordeaux
+# 1102: Bretagne  
+
+sites <- c("204", "948", "1014", "1102")  
+years <- c(2010, 2015, 2022)
+
+require(scales)
+# Plot
+for(ss in sites){
+    spei_plot <- subset(spei, ID_PROG == ss)
+
+    gg <- ggplot(data = spei_plot, aes(x = as.factor(Month14), y = SPEI)) +
+    geom_boxplot() +
+    scale_x_discrete(name = "Month") +
+    ggtitle(paste("Evolution of SPEI for the site ", ss)) +
+    geom_hline(yintercept = 0)
+    plot(gg)
+  
+}
+```
+
+
+### Correlation between the various ways of computing SPEI  
+
+When I ran the gamm with early and late SPEI, I didn't find the same graph when using the mean daily SPEI and the SPEI computed on the 2 periods, early and late breeding season.  
+So I will check if both measures are correlated (here we want a correlation).  
+
+```{r}
+setwd("C:/Users/Nathalie Adenot/STOC") # I change directory because I work on my other computer
+
+# load mean daily value 
+# I will use the median hatching date 14/05 (Julian day 134) as a limit between early and late breeding period.  
+dspei <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+
+# compute early and late mean SPEI
+# keep only useful climate data  
+dspei <- dspei %>% 
+  rename(YEAR = an) %>% 
+  filter(d > 72 & d <197) %>% # keep spring data
+  dplyr::select(ID_PROG, Date, d, YEAR, SPEI) 
+
+# Create variable "early" and "late"  
+dspei <- dspei %>% 
+  filter(!is.infinite(SPEI)) %>% 
+  mutate(period = ifelse(d < 134, "early", "late")) %>%  # early until median hatching date, day = 134
+  group_by(ID_PROG, YEAR, period) %>% 
+  summarize(mSPEI = mean(SPEI, na.rm = TRUE))
+  
+# wider  
+dspei_wide <- dspei %>% 
+  filter(!is.na(period)) %>% 
+  tidyr::pivot_wider(names_from = period, values_from = c(mSPEI))
+
+
+# load 2 month-values  
+late_spei <- fread("C:/Users/Nathalie Adenot/STOC/Variables/data/late_spei_month2.csv")
+early_spei <- fread("C:/Users/Nathalie Adenot/STOC/Variables/data/early_spei_month2.csv")
+
+
+```
+
+_Correlation early SPEI_  
+
+```{r correlation early SPEI}
+
+# plot  
+plot(early_spei$SPEI ~ dspei_wide$early)
+
+# coefficient
+cor.test(early_spei$SPEI, dspei_wide$early, method = "spearman")  # 0.56
+
+```
+
+_Correlation late SPEI_  
+ 
+```{r}
+# plot  
+plot(late_spei$SPEI ~ dspei_wide$late)
+
+# coefficient
+cor.test(late_spei$SPEI, dspei_wide$late, method = "spearman")  # 0.59
+
+```
+
+Both variables are correlated, but the correlation is not as high as we could expect (<0.6).  
+
+
+I will check the correlation for spring values.
+
+
+_Monthly SPEI values_  
+
+```{r}
+
+spei_month1 <- fread("C:/git/STOC/Variables/data/spei_month1.csv") # monthly data
+spei_month <- spei_month1 %>% 
+  pivot_longer(cols = 3:408, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID)))
+
+# daily data
+spei_d <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+spei_d <- spei_d %>% 
+  mutate(month = month(Date)) %>% 
+  filter(!is.infinite(SPEI)) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  group_by(ID_PROG, an, month) %>% 
+  summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+
+spei_all <- spei_month %>% 
+  left_join(spei_d, by = c("Year" = "an", "Month" = "month", "ID_PROG"))
+
+# plot  
+plot(spei_all$mSPEI ~ spei_all$SPEI)
+
+# coefficient
+cor.test(spei_all$mSPEI, spei_all$SPEI, method = "spearman")  # 0.90
+
+```
+
+The correlation is much higher when considering  monthly values. 
+
+
+Finally, I will check spring values computed over 4 months and mean spring values.  
+
+_Spring SPEI_ 
+
+```{r}
+
+spei_month4 <- fread("C:/git/STOC/Variables/data/spei_month4.csv") # monthly data
+
+spei_d <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+spei_d_spring <- spei_d %>% 
+  filter(d > 72 & d <197) %>% # keep spring data
+  filter(!is.infinite(SPEI)) %>% 
+  group_by(ID_PROG, an) %>% 
+  summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+
+
+# plot  
+plot(spei_month4$SPEI ~ spei_d_spring$mSPEI)
+
+# coefficient
+cor.test(spei_month4$SPEI, spei_d_spring$mSPEI, method = "spearman")  # 0.52
+```
+
+
+#### Comparison between mean daily SPEI and SPEI computed on 30 days  
+
+```{r}
+spei_day1 <- fread("C:/git/STOC/Variables/data/spei_day1.csv") # daily data
+spei_day30 <- fread("C:/git/STOC/Variables/data/spei_day30.csv") # daily data computed over 30 days  
+
+# pivot longer
+spei_day1 <- spei_day1 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID))) %>% 
+  mutate(SPEI = replace(SPEI, is.infinite(SPEI), NA))
+
+spei_day30 <- spei_day30 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID)))
+
+# get monthly values  
+spei_month1 <- spei_day1 %>% 
+  mutate(month = month(Date), year = year(Date)) %>% 
+  group_by(ID_PROG, month, year) %>% 
+  summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+
+spei_month30 <- spei_day30 %>% 
+  mutate(month = month(Date), year = year(Date), day = day(Date)) %>%
+  filter(day == 30)
+
+spei_plot <- spei_month30 %>% 
+  left_join(spei_month1)
+
+# plot correlation  
+plot(spei_plot$SPEI ~ spei_plot$mSPEI)
+gg <- ggplot(data=spei_plot, aes(x=SPEI, y=mSPEI)) + geom_point()
+gg <- gg + geom_smooth()
+gg <- gg + labs(title = "Correlation between mean daily SPEI and SPEI computed over 30 days") + xlab("SPEI computed over the last 30 days using spei()") + ylab("Monthly mean daily SPEI")
+gg
+# ggsave(paste0("C:/git/STOC/Variables/output/SPEI/SPEI_cor_check_30_days.png"))
+
+
+# coefficient
+cor.test(spei_plot$SPEI, spei_plot$mSPEI, method = "spearman")  # 0.90
+
+```
+
+Here the correlation is pretty good (0.9) though not perfect.  
+I will now test it at several time scales.  
+
+```{r}
+library(tidyverse)
+library(SPEI)
+
+# load climate data
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+# Calculate water balance
+meteo$BAL <- meteo$PRELIQ_Q - meteo$ETP_Q
+
+# Transform data to have stations as columns and water balance values
+meteo_t <- meteo %>% 
+  distinct() %>% 
+#  filter(an == 2020) %>% 
+  dplyr::select(DATE2, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+# transform to time series
+meteo_ts_all <- ts(as.matrix(meteo_t[,-1]),     # random data, only 1 site
+           start = c(1990, 1), 
+           frequency = 365)
+
+## I will now create a loop to calculate SPEI over 2, 3, 4... days and compare results with mean daily SPEI  
+# daily SPEI
+spei_day1 <- fread("C:/git/STOC/Variables/data/spei_day1.csv") # daily data
+spei_day1 <- spei_day1 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID))) %>% 
+  mutate(SPEI = replace(SPEI, is.infinite(SPEI), NA)) %>% 
+  mutate(month = month(Date), year = year(Date), day = day(Date))
+  # select(SPEI:day) %>% 
+  # distinct()
+
+days_per_site <- nrow(subset(spei_day1, ID_PROG == 1))
+nb_sites <- length(unique(spei_day1$ID))
+
+# initialize objects to store correlation coefficients 
+correlation_SPEI <- c() 
+
+for(d in 6:60){
+  # compute SPEI over d days
+  spei_ts_all <- spei(meteo_ts_all, d)
+  
+  # format in df
+  spei_data_day <- as.data.frame(spei_ts_all$fitted) 
+  # Add temporal information
+  spei_data_day <- cbind(meteo_t$DATE2, spei_data_day)
+  colnames(spei_data_day)[1] <- "Date"
+  
+  write.csv(spei_data_day, file = paste0("C:/git/STOC/Variables/data/SPEI/spei_", d, "_days.csv"), row.names = FALSE)
+  
+  # compare with mean daily SPEI  
+  # pivot longer
+  spei_day_d <- spei_data_day %>% 
+    pivot_longer(cols = 2:ncol(spei_data_day), names_to = "ID", values_to = "SPEI") %>% 
+    mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID)))
+  
+  # get "monthly" values 
+  ## daily means
+  # add column to specify number of days to summarise  
+  D <- rep(1:days_per_site, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site], times = nb_sites))
+  colnames(D_merge) <- "D"
+  # average over d days
+  spei_month1 <- spei_day1 %>% 
+    arrange(ID_PROG) %>% 
+    cbind(D_merge) %>%
+    group_by(ID_PROG, D) %>% 
+    summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+  
+  ## computed over d days
+  # count days to select which one to keep
+  # (we keep the last day of the d-day period)
+  ddays <- rep(1:d, times = ifelse(nrow(spei_day_d)/d == round(nrow(spei_day_d)/d), nrow(spei_day_d)/d, nrow(spei_day_d)/d+1))
+  ddays <- as.data.frame(ddays[1:nrow(spei_day_d)])
+  colnames(ddays) <- "ddays"
+  
+  days_per_site_ <- nrow(subset(spei_day_d, ID_PROG == 1))
+  nb_sites_ <- length(unique(spei_day_d$ID))
+  
+  # to merge with the other df
+  D <- rep(1:days_per_site_, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site_], times = nb_sites_))
+  colnames(D_merge) <- "D"
+  spei_ddays <- spei_day_d %>% 
+    arrange(ID_PROG) %>% 
+    cbind(ddays) %>% 
+    cbind(D_merge) %>% 
+    filter(ddays == d)
+  
+  # merge
+  spei_plot <- spei_ddays %>% 
+    left_join(spei_month1, by = c("ID_PROG", "D")) %>% 
+    filter(!is.infinite(SPEI))
+  
+  # plot correlation  
+  #plot(spei_plot$SPEI ~ spei_plot$mSPEI)
+  gg <- ggplot(data=spei_plot, aes(x=SPEI, y=mSPEI)) + geom_point()
+  gg <- gg + geom_smooth()
+  gg <- gg + labs(title = paste0("Correlation between mean daily SPEI and SPEI computed over ", d, " days")) + xlab(paste0("SPEI computed over the last ", d, " days using spei()")) + ylab(paste0("Daily SPEI averaged over ", d, "days"))
+  # gg
+  ggsave(paste0("C:/git/STOC/Variables/output/SPEI/SPEI_cor_",d,"_days.png"))
+
+  
+  # coefficient
+  res <- cor.test(spei_plot$SPEI, spei_plot$mSPEI, method = "spearman")  # 0.90
+  correlation_SPEI <- c(correlation_SPEI, res$estimate)
+  
+}
+
+df_cor_SPEI <- data.frame(2:60, correlation_SPEI)
+colnames(df_cor_SPEI) <- c("days", "cor")
+# Plot evolution of correlation coefficients  
+gg <- ggplot(data = df_cor_SPEI, aes(x = days, y = cor)) +
+    geom_point() + geom_smooth()
+gg <- gg +  labs(title = "Corrélation entre méthodes de calcul du SPEI \n et nombre de jours d'intégration") +  xlab("nombre de jours d'intégration") + ylab("Correlation coefficient")
+gg
+```
+
+
+There is something off somewhere, probably because a month is not always 30 days. This is why I don't get the same graph for 30 days than with monthly values. 
+
+So I don't think my script is wrong as I integrate on the same days in both cases, even if it doesn't correspond to months.  
+I will now run the code again but add the calculation of the R².  
+
+```{r}
+library(tidyverse)
+library(SPEI)
+library(data.table)
+library(lme4)
+library(lubridate)
+
+# load climate data
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+# Calculate water balance
+meteo$BAL <- meteo$PRELIQ_Q - meteo$ETP_Q
+
+# Transform data to have stations as columns and water balance values
+meteo_t <- meteo %>% 
+  distinct() %>% 
+#  filter(an == 2020) %>% 
+  dplyr::select(DATE2, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+# transform to time series
+meteo_ts_all <- ts(as.matrix(meteo_t[,-1]),     # random data, only 1 site
+           start = c(1990, 1), 
+           frequency = 365)
+
+## I will now create a loop to calculate SPEI over 2, 3, 4... days and compare results with mean daily SPEI  
+# daily SPEI
+spei_day1 <- fread("C:/git/STOC/Variables/data/spei_day1.csv") # daily data
+spei_day1 <- spei_day1 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID))) %>% 
+  mutate(SPEI = replace(SPEI, is.infinite(SPEI), NA)) %>% 
+  mutate(month = month(Date), year = year(Date), day = day(Date))
+  # select(SPEI:day) %>% 
+  # distinct()
+
+days_per_site <- nrow(subset(spei_day1, ID_PROG == 1))
+nb_sites <- length(unique(spei_day1$ID))
+
+# initialize objects to store correlation coefficients 
+correlation_SPEI <- c() 
+r_squared <- c()
+r_squared_lmer <- c()
+
+for(d in 2:60){
+  print(d)
+  #import SPEI computed over ddays (I did it above and saved the file)
+  spei_data_day <- fread(paste0("C:/git/STOC/Variables/data/SPEI/spei_", d, "_days.csv"))
+  
+   # compare with mean daily SPEI  
+  # pivot longer
+  spei_day_d <- spei_data_day %>% 
+    pivot_longer(cols = 2:ncol(spei_data_day), names_to = "ID", values_to = "SPEI") %>% 
+    mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID)))
+  
+  # get "monthly" values 
+  ## daily means
+  # add column to specify number of days to summarise  
+  D <- rep(1:days_per_site, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site], times = nb_sites))
+  colnames(D_merge) <- "D"
+  # average over d days
+  spei_month1 <- spei_day1 %>% 
+    arrange(ID_PROG) %>% 
+    cbind(D_merge) %>%
+    group_by(ID_PROG, D) %>% 
+    summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+  
+  ## computed over d days
+  # count days to select which one to keep
+  # (we keep the last day of the d-day period)
+  ddays <- rep(1:d, times = ifelse(nrow(spei_day_d)/d == round(nrow(spei_day_d)/d), nrow(spei_day_d)/d, nrow(spei_day_d)/d+1))
+  ddays <- as.data.frame(ddays[1:nrow(spei_day_d)])
+  colnames(ddays) <- "ddays"
+  
+  days_per_site_ <- nrow(subset(spei_day_d, ID_PROG == 1))
+  nb_sites_ <- length(unique(spei_day_d$ID))
+  
+  # to merge with the other df
+  D <- rep(1:days_per_site_, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site_], times = nb_sites_))
+  colnames(D_merge) <- "D"
+  spei_ddays <- spei_day_d %>% 
+    arrange(ID_PROG) %>% 
+    cbind(ddays) %>% 
+    cbind(D_merge) %>% 
+    filter(ddays == d)
+  
+  # merge
+  spei_plot <- spei_ddays %>% 
+    left_join(spei_month1, by = c("ID_PROG", "D")) %>% 
+    filter(!is.infinite(SPEI))
+  
+  # plot correlation  
+  #plot(spei_plot$SPEI ~ spei_plot$mSPEI)
+  # gg <- ggplot(data=spei_plot, aes(x=SPEI, y=mSPEI)) + geom_point()
+  # gg <- gg + geom_smooth()
+  # gg <- gg + labs(title = paste0("Correlation between mean daily SPEI and SPEI computed over ", d, " days")) + xlab(paste0("SPEI computed over the last ", d, " days using spei()")) + ylab(paste0("Daily SPEI averaged over ", d, "days"))
+  # # gg
+  # ggsave(paste0("C:/git/STOC/Variables/output/SPEI/SPEI_cor_",d,"_days.png"))
+
+  
+  # coefficient
+  res <- cor.test(spei_plot$SPEI, spei_plot$mSPEI, method = "spearman")  # 0.90
+  correlation_SPEI <- c(correlation_SPEI, res$estimate)
+  
+  # R²
+  lm <- lm(spei_plot$SPEI ~ spei_plot$mSPEI)
+  r2 <- summary(lm)$adj.r.squared
+  r_squared <- c(r_squared, r2)
+  
+  lmer_ <- lmer(SPEI ~ mSPEI + (1|ID_PROG), spei_plot)
+  r2 <- summary(lm)$adj.r.squared
+  r_squared_lmer <- c(r_squared, r2)
+}
+
+df_cor_SPEI <- data.frame(2:60, correlation_SPEI)
+colnames(df_cor_SPEI) <- c("days", "cor")
+# Plot evolution of correlation coefficients  
+gg <- ggplot(data = df_cor_SPEI, aes(x = days, y = cor)) +
+    geom_point() + geom_smooth()
+gg <- gg +  labs(title = "Correlation between averaging daily SPEI values \n and computing SPEI over n days ") +  xlab("Number of days used to compute SPEI (n)") + ylab("Correlation coefficient")
+gg
+
+
+df_r2_SPEI <- data.frame(2:60, r_squared)
+colnames(df_r2_SPEI) <- c("days", "r2")
+# Plot evolution of correlation coefficients  
+gg <- ggplot(data = df_r2_SPEI, aes(x = days, y = r2)) +
+    geom_point() + geom_smooth()
+gg <- gg +  labs(title = "Corrélation entre méthodes de calcul du SPEI \n et nombre de jours d'intégration") +  xlab("nombre de jours d'intégration") + ylab("R²")
+gg
+
+df_r2_SPEI_lmer <- data.frame(2:61, r_squared_lmer)
+colnames(df_r2_SPEI_lmer) <- c("days", "r2")
+# Plot evolution of correlation coefficients  
+gg <- ggplot(data = df_r2_SPEI_lmer, aes(x = days, y = r2)) +
+    geom_point() + geom_smooth()
+gg <- gg +  labs(title = "Corrélation entre méthodes de calcul du SPEI \n et nombre de jours d'intégration") +  xlab("nombre de jours d'intégration") + ylab("R²")
+gg
+# it's exactly the same with lm or lmer
+```
+
+
+#### Comparaison entre calcul à partir de moyennes mensuelles et intégration sur 30 jours de valeurs journalières  
+
+Après avoir comparé l'intégration sur 30 jours des valeurs journalières de BAL avec la moyenne effectuée a posteriori des valeurs journalières de SPEI, je vais comparer cette intégration des valeurs journalières avec le SPEI calculé à partir des moyennes mensuelles.  
+
+Je commence avec les données que j'ai déjà: intervalle mensuel.  
+
+```{r}
+spei_day30 <- fread("C:/git/STOC/Variables/data/spei_day30.csv") # daily data computed over 30 days  
+spei_month1 <- fread("C:/git/STOC/Variables/data/spei_month1.csv") # monthly data
+
+
+# pivot longer
+spei_month1 <- spei_month1 %>% 
+  pivot_longer(cols = 3:408, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID))) %>% 
+  mutate(SPEI = replace(SPEI, is.infinite(SPEI), NA))
+
+spei_day30 <- spei_day30 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID)))
+
+# get monthly values  
+spei_month30 <- spei_day30 %>% 
+  mutate(month = month(Date), year = year(Date), day = day(Date)) %>%
+  filter(day == 30) %>% 
+  rename(SPEI30 = SPEI)
+
+spei_plot <- spei_month30 %>% 
+  left_join(spei_month1, by = c("ID_PROG", "ID", "month" = "Month", "year" = "Year"))
+
+# plot correlation  
+plot(spei_plot$SPEI30 ~ spei_plot$SPEI)
+gg <- ggplot(data=spei_plot, aes(x=SPEI30, y=SPEI)) + geom_point()
+gg <- gg + geom_smooth()
+gg <- gg + labs(title = "Correlation between monthly SPEI values and SPEI computed over 30 days") + xlab("SPEI computed over the last 30 days using spei()") + ylab("SPEI computed with monthly climate values")
+gg
+
+
+# coefficient
+cor.test(spei_plot$SPEI, spei_plot$SPEI30, method = "spearman")  # 0.99
+
+```
+
+Here the correlation is really good (0.99)  
+
+Now I will also test several time scales  
+
+
+_Time scales > 1 month_  
+
+I will use only monthly data and compare values computed over 2, 3... months.  
+
+```{r}
+# load data
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+## Compute monthly mean values  
+meteo_mean <- meteo %>% 
+  group_by(ID_PROG, an, mo) %>% 
+  summarise(avg_T = mean(T_Q), avg_P = mean(PRELIQ_Q), avg_PET = mean(ETP_Q))
+# Calculate water balance
+meteo_mean$BAL <- meteo_mean$avg_P - meteo_mean$avg_PET
+# Transform data to have stations as columns and water balance values
+meteo_t_mean <- meteo_mean %>% 
+  distinct() %>% 
+  dplyr::select(an, mo, ID_PROG, BAL) %>% 
+  pivot_wider(names_from = ID_PROG, values_from = BAL) 
+
+
+# daily SPEI values
+spei_day1 <- fread("C:/git/STOC/Variables/data/spei_day1.csv") # daily data
+spei_day1 <- spei_day1 %>% 
+  pivot_longer(cols = 2:407, names_to = "ID", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.factor(gsub(".*?([0-9]+).*", "\\1", ID))) %>% 
+  mutate(SPEI = replace(SPEI, is.infinite(SPEI), NA)) %>% 
+  mutate(month = month(Date), year = year(Date), day = day(Date))
+  # select(SPEI:day) %>% 
+  # distinct()
+
+
+
+## loop on 2 to 12 months
+for(m in 1:12){
+  
+  ## compute monthly SPEI
+  
+  # With all sites
+  meteo_ts_all <- ts(as.matrix(meteo_t_mean[,-c(1,2)]),     # random data, only 1 site
+                     start = c(1990, 1), 
+                     frequency = 12)
+  spei_ts_all <- spei(meteo_ts_all, m)
+  
+  spei_data <- as.data.frame(spei_ts_all$fitted) # On a bien 1 colonne par site
+  
+  # Add temporal information
+  spei_data <- cbind(meteo_t_mean$an, meteo_t_mean$mo, spei_data)
+  colnames(spei_data)[1:2] <- c("Year", "Month")
+  
+  
+  ## Compute monthly mean daily SPEI  
+  
+  
+  # add column to specify number of days to summarise  
+  D <- rep(1:days_per_site, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site], times = nb_sites))
+  colnames(D_merge) <- "D"
+  # average over d days
+  spei_month1 <- spei_day1 %>% 
+    arrange(ID_PROG) %>% 
+    cbind(D_merge) %>%
+    group_by(ID_PROG, D) %>% 
+    summarise(mSPEI = mean(SPEI, na.rm = TRUE))
+  
+  ## computed over d days
+  # count days to select which one to keep
+  # (we keep the last day of the d-day period)
+  ddays <- rep(1:d, times = ifelse(nrow(spei_day_d)/d == round(nrow(spei_day_d)/d), nrow(spei_day_d)/d, nrow(spei_day_d)/d+1))
+  ddays <- as.data.frame(ddays[1:nrow(spei_day_d)])
+  colnames(ddays) <- "ddays"
+  
+  days_per_site_ <- nrow(subset(spei_day_d, ID_PROG == 1))
+  nb_sites_ <- length(unique(spei_day_d$ID))
+  
+  # to merge with the other df
+  D <- rep(1:days_per_site_, each = d)
+  D_merge <- as.data.frame(rep(D[1:days_per_site_], times = nb_sites_))
+  colnames(D_merge) <- "D"
+  spei_ddays <- spei_day_d %>% 
+    arrange(ID_PROG) %>% 
+    cbind(ddays) %>% 
+    cbind(D_merge) %>% 
+    filter(ddays == d)
+  
+  # merge
+  spei_plot <- spei_ddays %>% 
+    left_join(spei_month1, by = c("ID_PROG", "D")) %>% 
+    filter(!is.infinite(SPEI))
+  
+  # plot correlation  
+  #plot(spei_plot$SPEI ~ spei_plot$mSPEI)
+  gg <- ggplot(data=spei_plot, aes(x=SPEI, y=mSPEI)) + geom_point()
+  gg <- gg + geom_smooth()
+  gg <- gg + labs(title = paste0("Correlation between mean daily SPEI and SPEI computed over ", m, " months")) + xlab(paste0("SPEI computed over the last ", m, " months using spei()")) + ylab(paste0("Daily SPEI averaged over ", m, "months"))
+  # gg
+  ggsave(paste0("C:/git/STOC/Variables/output/SPEI/SPEI_cor_",m,"_months.png"))
+
+  
+  # coefficient
+  res <- cor.test(spei_plot$SPEI, spei_plot$mSPEI, method = "spearman")  # 0.90
+  correlation_SPEI <- c(correlation_SPEI, res$estimate)
+  
+  # R²
+  lm <- lm(spei_plot$SPEI ~ spei_plot$mSPEI)
+  r2 <- summary(lm)$adj.r.squared
+  r_squared <- c(r_squared, r2)
+  
+  lmer_ <- lmer(SPEI ~ mSPEI + (1|ID_PROG), spei_plot)
+  r2 <- summary(lm)$adj.r.squared
+  r_squared_lmer <- c(r_squared, r2)
+}
+
+# write.csv(spei_data, file = "C:/git/STOC/Variables/data/spei_month1.csv", row.names = FALSE)
+```
+
+
+## Plot interannual variation of SPEI  
+
+```{r}
+data <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+data <- data %>% select(YEAR, SPEI, ID_PROG) %>% distinct() 
+
+gg <- ggplot(aes(x = as.factor(YEAR), y = SPEI), data = data) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=90)) + xlab("Year") + ylab("spring SPEI")
+gg
+ggsave("C:/git/STOC/Variables/output/SPEI/evolution.png", plot = last_plot(), width = 17, height = 10, units = "cm")
+
+```
+

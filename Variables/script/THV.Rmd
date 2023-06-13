@@ -1,0 +1,221 @@
+---
+title: "THV"
+author: "Nathalie Adenot"
+date: "2023-05-10"
+output: html_document
+---
+
+
+```{r packages} 
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(DataExplorer)
+library(Factoshiny)
+library(FactoMineR)
+library(BioStatR)
+library(ade4)
+library(vegan)
+library("ggplot2")
+library("factoextra")
+library(corrplot)
+library(RVAideMemoire)
+```
+
+
+
+```{r import data}
+
+# most captured species 
+sp_capt <- fread("C:/git/STOC/Variables/data/sp_capt.csv")
+
+Storchova <- fread("C:/git/STOC/Variables/data/THV/Storchova.csv")
+
+Moussus <- fread("C:/git/STOC/Variables/data/THV/THV_Moussus.csv")  
+
+Gregory <- fread("C:/git/STOC/Variables/data/THV/THV_Gregory2007.csv")
+Gregory <- Gregory[,-1]
+
+THV_sp <- fread("C:/git/STOC/Variables/data/THV/THV_all_sp.csv")
+
+TSI <- fread("C:/git/STOC/Variables/data/THV/espece_indicateur_fonctionel_Jiguet2007.csv")
+sp_names <- fread("C:/git/STOC/Variables/data/THV/nom_especes.csv")
+TSI <- TSI %>% 
+  left_join(sp_names, by = c("pk_species" = "SP")) %>% select(nom_sc, sti_europe) %>% 
+  filter(!is.na(nom_sc) & !(is.na(sti_europe)))
+
+# Create df with the variables I want to keep  
+df_THV <- Storchova %>% 
+  # full_join(Moussus) %>% # it is already in THV_sp
+  full_join(Gregory) %>% 
+  right_join(THV_sp) %>% 
+  pivot_longer(cols = Folivore_B:Omnivore_B, names_to = "Diet_Storchova") %>% 
+  filter(value == 1) %>%
+  mutate(Diet2 = ifelse(Diet_Storchova %in% c("Arthropods_B", "Other invertebrates_B"), "Insectivorous", "Omnivorous")) %>% # this way a species can be designated as both omnivorous and insectivorous --> these species are omnivorous
+  select(Species, HABITAT_SP, MIGRATION, Clutch_MEAN, `Broods per year`, Diet2) %>% 
+  left_join(TSI, by = c("Species" = "nom_sc")) %>% 
+  distinct()
+
+# species that are designated as insectivorous and omnivorous
+omni_sp <- df_THV %>% group_by(Species) %>% count() %>% filter(n>1)
+
+df_THV <- df_THV %>% 
+  filter(!(Species %in% omni_sp$Species & Diet2 == "Insectivorous"))
+```
+
+### Traits of species I keep for the analyses  
+
+```{r}
+Storchova33 <- Storchova %>% 
+  filter(Species %in% sp_capt$nom_sc[1:33]) %>% 
+  select(Species, Folivore_B:Omnivore_B)
+```
+
+# Data exploration  
+
+## Check colinearity  
+
+```{r}
+plot_correlation(df_THV, cor_args = list("use" = "pairwise.complete.obs")) 
+
+# Quantitative variables  
+THV_quant <- df_THV %>% select(Clutch_MEAN, `Broods per year`, TSI)
+plot_correlation(THV_quant, cor_args = list("use" = "pairwise.complete.obs"), type="c") 
+
+# Qualitative variables
+THV_qual <- df_THV %>% select(HABITAT_SP, MIGRATION, Diet_Storchova, Diet) %>% 
+  mutate(Diet2 = ifelse(Diet_Storchova %in% c("Arthropods_B", "Other invertebrates_B"), "Insectivorous", "Omnivorous"))
+plot_correlation(THV_qual[,c("HABITAT_SP", "MIGRATION", "Diet2")], cor_args = list("use" = "pairwise.complete.obs"), type="d") 
+
+```
+I checked separately quantitative and qualitative variables, but I can also calculate the "rapport de correlation" between quantitative and qualitative variables.  
+
+
+```{r ex script CEFE}  
+
+#matrice de corr?lation pour les variables num?riques continues
+# on utilise spearman parce que la r?partition n'est pas normale
+mat <- cor(df_THV[,c(4, 5, 7)],method = "spearman", use ="complete.obs")
+
+# x = var quantitative
+# y = var qualitative
+df_THV <- as.data.frame(df_THV)
+
+# create correlation matrix
+n <- ncol(df_THV)
+M<- matrix(0, n, n)
+row.names(M) <- colnames(df_THV)
+colnames(M) <- colnames(df_THV)
+
+#On ajoute le rapport de corrélation 
+for(i in c(2,3,6)){ # quali
+  for(j in c(4,5,7)){ # quanti
+    r <- BioStatR::eta2(df_THV[,j],df_THV[,i])
+    M[i,j] <- r
+  }
+}
+
+# keep non null values
+M <- M[c(2,3,6), c(4,5,7)]
+
+
+# Correlogramme
+corrplot(M, method="color",   
+         type="full", 
+         addCoef.col = "black",# Ajout du coefficient de corr?lation
+         tl.col=c(rep("black", times = 3), rep("red", times = 3)), tl.srt=45, #Rotation des etiquettes de textes
+         # Combiner avec le niveau de significativit?
+         #p.mat = p.mat, sig.level = 0.01, 
+         # Cacher les coefficients de corr?lation sur la diagonale
+         diag=TRUE)
+
+
+
+```
+
+
+
+## PCA  
+
+I want to do a PCA on species traits to see which ones are associated.  
+Actually a MCA is more appropriate as most variables are qualitative
+
+_MCA qual var_
+
+```{r}
+# Factoshiny  
+res <- Factoshiny(df_THV[,c("HABITAT_SP", "MIGRATION", "Diet2")])
+
+# code  
+res.MCA<-MCA(df_THV[, c("HABITAT_SP", "MIGRATION", "Diet2")],graph=FALSE)
+plot.MCA(res.MCA, choix='var',title="Graphe des variables",col.var=c(1,2,3))
+plot.MCA(res.MCA,invisible= 'ind',col.var=c(1,1,2,2,3,3),title="Graphe de l'ACM",label =c('var'))
+```
+
+
+_PCA quantitative variables_  
+
+```{r}
+# Factoshiny  
+res <- Factoshiny(df_THV[,c("Clutch_MEAN", "Broods per year", "sti_europe")])
+
+
+
+### All variables  
+## extraction var actives  
+df_THV_act <- df_THV[, c("Clutch_MEAN", "Broods per year", "sti_europe")]
+df_THV_act <- df_THV_act %>% 
+  filter(!is.na(sti_europe))
+
+# PCA
+
+## Colorer par groupe 
+df_THV_pca <- df_THV %>% 
+  distinct() %>% 
+  filter(!is.na(sti_europe)) %>%
+  mutate(HABITAT_SP = as.factor(HABITAT_SP), MIGRATION = as.factor(MIGRATION), Diet2 = as.factor(Diet2))
+
+
+iris.pca <- PCA(df_THV_pca[, - c(1:3,6)], graph = FALSE)
+
+# biplot by group
+
+## Group by migration
+png("C:/git/STOC/Variables/output/pca/group_migr.png")
+fviz_pca_biplot (iris.pca,
+                 col.ind = df_THV_pca$MIGRATION, #palette = "simpsons",
+                 addEllipses = TRUE, ellipse.type = "confidence", label = "var",
+                 # col.var = factor(c("Temperature", "Temperature", "SPEI", "SPEI", "NDVI", "NDVI", "Temperature", "NDVI", "SPEI", "Temperature", "SPEI", "Temperature", "Temperature", "SPEI", "SPEI")),
+                 repel = TRUE,
+                 legend.title = list(fill = "Migration"))+
+ggpubr::fill_palette("simpsons")#+      # Couleur des individus
+dev.off()
+
+
+# group by diet
+png("C:/git/STOC/Variables/output/pca/group_diet.png")
+fviz_pca_biplot (iris.pca,
+                 col.ind = df_THV_pca$Diet2, #palette = "simpsons",
+                 addEllipses = TRUE, ellipse.type = "confidence", label = "var",
+                 # col.var = factor(c("Temperature", "Temperature", "SPEI", "SPEI", "NDVI", "NDVI", "Temperature", "NDVI", "SPEI", "Temperature", "SPEI", "Temperature", "Temperature", "SPEI", "SPEI")),
+                 repel = TRUE,
+                 legend.title = list(fill = "Diet"))+
+ggpubr::fill_palette("simpsons")#+      # Couleur des individus
+dev.off()
+
+
+
+# group by Habitat
+png("C:/git/STOC/Variables/output/pca/group_hab.png")
+fviz_pca_biplot (iris.pca,
+                 col.ind = df_THV_pca$HABITAT_SP, #palette = "simpsons",
+                 addEllipses = TRUE, ellipse.type = "confidence", label = "var",
+                 # col.var = factor(c("Temperature", "Temperature", "SPEI", "SPEI", "NDVI", "NDVI", "Temperature", "NDVI", "SPEI", "Temperature", "SPEI", "Temperature", "Temperature", "SPEI", "SPEI")),
+                 repel = TRUE,
+                 legend.title = list(fill = "Habitat"))+
+ggpubr::fill_palette("simpsons")#+      # Couleur des individus
+dev.off()
+
+ 
+```
+

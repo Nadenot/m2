@@ -1,0 +1,504 @@
+---
+title: "Full model"
+author: "Nathalie Adenot"
+date: "06/04/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(glmmTMB)
+```
+
+Now that I have explored linearities, I can transform variables to take into account quadratic relationships (for SPEI early + late,  temperature anomalies late, NDVI ?).
+
+Temperatures could also be modelled as a quadratic relationship (optimum), but it would be too complicated to model in interaction with temperature anomalies. 
+That is why we decided to divide sites in 2 categories of temperature.            
+
+## Combine variables  
+
+We decided to keep 2 environmental variables (early and late) for anomalies, but not for mean.  
+
+```{r}
+# Import spring variables
+spring_var <- fread("C:/git/STOC/Variables/data/model/data_model_all_a.csv")
+spring_var <- spring_var %>% 
+  dplyr::select(ID_PROG:MIGRATION, LON:mBAL, myTemp, myNDVI, mdaNDVI)
+
+# Import early/late variables
+var_2periods <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+var_2periods <- var_2periods %>%
+  dplyr::select(ID_PROG:meanSPEI_late, mean_aT_early:mean_aT_late, mean_aNDVI_early:mean_aNDVI_late)
+
+var_model <- spring_var %>% 
+  inner_join(var_2periods)
+
+```
+We add the binary variable for temperature: cold and warm sites:  
+
+```{r temperature categories}  
+catT <- fread("C:/git/STOC/Variables/data/temp_cat_sites.csv")
+
+var_model <- var_model %>% 
+  left_join(catT) %>% 
+  mutate(cat = as.factor(cat))
+
+# save file
+# write.csv(var_model, file = "C:/git/STOC/Variables/data/model/var_model_final.csv", row.names = FALSE)
+
+```
+Le tableau de données que je viens de créer contient uniquement les 33 espèces pour lesquelles j'ai calculé la phénologie au départ, et non toutes les espèces.  
+Les périodes early/late sont définies en fonction de la phénologie de chaque espèce.  
+
+*Explore this new variable*  
+
+```{r}
+# Boxplot  
+gg <- ggplot(var_model, aes(x = cat, y = Prod)) +
+  geom_boxplot()
+gg
+
+```
+
+
+## Add quadratic terms  
+
+```{r}
+var_model <- fread("C:/git/STOC/Variables/data/model/df_model_final.csv")
+
+## Scale variables  
+var_model_scaled <- var_model %>% 
+  mutate_at(c("mean_BAL", "mean_T", "meanNDVI", "early_SPEI","late_SPEI", "mean_aNDVI_early", "mean_aNDVI_late", "mean_aT_early", "mean_aT_late"), scale)
+
+# Add quadratic terms
+# SPEI early + late,  temperature anomalies late
+var_model_scaled <- var_model_scaled %>% 
+  mutate(SPEI_early2 = meanSPEI_early * meanSPEI_early) %>% 
+  mutate(SPEI_late2 = meanSPEI_late * meanSPEI_late) %>% 
+  mutate(aT_late2 = mean_aT_late * mean_aT_late)
+
+
+```
+
+_Density-dependance_  
+In addition to the environmental variables, we need to control for density.  
+We will add it as a variable in anomaly.  
+
+```{r}
+# Add column density  
+var_model_scaled_density <- var_model_scaled %>% 
+  group_by(ESPECE, ID_PROG) %>% 
+  summarise(m_density = mean(AD))
+var_model_scaled <- var_model_scaled %>%
+  left_join(var_model_scaled_density) %>% 
+  mutate(a_density_raw = AD - m_density) %>% 
+  mutate(density = scale(a_density_raw))
+
+write.csv(var_model_scaled, file = "C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv", row.names = FALSE)
+```
+
+
+## Model  
+
+```{r model}
+
+var_model_scaled <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+# var_model_scaled <- fread("C:/Users/Nathalie Adenot/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# J'ai une erreur ici quand dans le modèle j'utilise na.omit ou na.exclude, et j'ai une erreur dans le modèle quand je mets na.action = "na.fail"
+# Pour corriger ça il faut prendre uniquement les années-sites pour lesquelles il n'y a pas de données manquantes (donc pour lesquelles on a NDVI et SPEI)
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>% 
+  filter(!is.na(meanNDVI)) %>% 
+  filter(!is.na(early_SPEI))
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + late_SPEI + 
+                mean_BAL:early_SPEI + mBAL:late_SPEI +  
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                myNDVI + mean_aNDVI_early + mean_aNDVI_late + myNDVI:mean_aNDVI_early + myNDVI:mean_aNDVI_late +
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m1)
+# drop1(m1)
+
+library(MuMIn)
+options(na.action = "na.fail") # Required for dredge to run
+
+m1_dredge <- dredge(m1, trace = 2) # trace = 2 to see the advancement  
+
+head(m1_dredge)
+
+# top model from our dredging
+top_model <- get.models(m1_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# averaging all models with a delta AIC <= 2
+#  The estimates are those that were averaged across all models with a delta AIC <= 2
+summary(model.avg(m1_dredge, subset = delta <= 2))
+
+# Visualize the model selection table:
+ if(require(graphics)) { 
+par(mar = c(3,5,6,4))
+plot(m1_dredge, labAsExpr = TRUE)
+ } 
+model.avg(m1_dredge, subset = delta < 4)
+
+confset.95p <- get.models(m1_dredge, cumsum(weight) <= .95)
+avgmod.95p <- model.avg(confset.95p)
+summary(avgmod.95p)
+confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+### Multi-model inferences  
+I will now use MuMIn to perform multimodel inferences. 
+
+```{r MuMIn}
+library(MuMIn)
+m1_dredge <- dredge(m1)
+
+head(m1_dredge)
+
+# top model from our dredging
+top_model <- get.models(m1_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# averaging all models with a delta AIC <= 2
+#  The estimates are those that were averaged across all models with a delta AIC <= 2
+summary(model.avg(m1_dredge, subset = delta <= 2))
+
+# Visualize the model selection table:
+ if(require(graphics)) { 
+par(mar = c(3,5,6,4))
+plot(m1_dredge, labAsExpr = TRUE)
+ } 
+model.avg(m1_dredge, subset = delta < 4)
+
+confset.95p <- get.models(m1_dredge, cumsum(weight) <= .95)
+avgmod.95p <- model.avg(confset.95p)
+summary(avgmod.95p)
+confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+
+
+
+
+
+
+La suite correspond à la méthode de Yannick Outreman. Il vaut mieux utiliser MuMIn  mais comme ça met hyper longtemps à tourner je commence par faire ça. 
+
+On commence avec le modèle complet:
+
+```{r}
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + late_SPEI + 
+                mean_BAL:early_SPEI + mean_BAL:late_SPEI +  
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + meanNDVI:mean_aNDVI_late +
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+## Check model with DHARMa
+library(DHARMa)
+simres <- simulateResiduals(m1)
+plot(simres)
+
+## other method
+resid<-residuals(m1, type="pearson")
+par(mfrow=c(3,2))
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # not very normal
+# residuals vs fitted
+plot(resid~fitted(m1)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+# slight decreasing pattern
+
+# m2 <- glmmTMB(cbind(JUV, AD) ~ mBAL + meanSPEI_early + meanSPEI_late + SPEI_early2 + SPEI_late2 + 
+#                 mBAL:meanSPEI_early + mBAL:meanSPEI_late +  
+#                 myTemp + mean_aT_early + mean_aT_late + aT_late2 + 
+#                 myNDVI + mdaNDVI + 
+#                 (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+#               family=binomial, data=var_model_scaled)
+
+summary(m1)
+d1 <- drop1(m1, test="Chisq")
+print(d1)
+```
+On enlève le terme le moins significatif, dont la délétion donne le modèle avec le plus bas AIC.  
+Ici, 2 termes sont à égalité: *mean_BAL:early_SPEI* et *mean_BAL:late_SPEI*
+
+
+```{r}
+m2 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + late_SPEI + 
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + meanNDVI:mean_aNDVI_late +
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+d1 <- drop1(m2, test="Chisq")
+print(d1)
+```
+
+
+
+On enlève *meanNDVI:mean_aNDVI_late*  
+
+```{r}
+m3 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + late_SPEI + 
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + 
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+d1 <- drop1(m3, test="Chisq")
+print(d1)
+```
+
+On enlève *late_SPEI*  
+
+```{r}
+m4 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + 
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + 
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+d1 <- drop1(m4, test="Chisq")
+print(d1)
+```
+
+On enlève *mean_aNDVI_late*
+
+```{r}
+m5 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + 
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + meanNDVI:mean_aNDVI_early + 
+                density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+d1 <- drop1(m5, test="Chisq")
+print(d1)
+# this is the best model  
+summary(m5)
+
+```
+
+
+Tout est maintenant significatif: candidate model  
+
+### Model validation  
+
+```{r}
+resid<-residuals(m1, type="pearson")
+
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # not bad
+
+# residuals vs fitted
+plot(resid~fitted(m1)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+#ok
+
+
+# DHARMa
+library(DHARMa)
+simulationOutput <- simulateResiduals(fittedModel = m1, plot = T)
+#ok
+```
+
+
+
+## For phylogenetic meta-analysis: species as fixed effect  
+
+```{r species fixed}
+var_model_scaled <- fread("C:/git/STOC/Variables/data/model/var_model_final_scaled.csv")
+var_model_scaled <- fread("C:/Users/Nathalie Adenot/STOC/Variables/data/model/var_model_final_scaled.csv")
+
+
+m_meta <- glmmTMB(cbind(JUV, AD) ~ mBAL + meanSPEI_early + meanSPEI_late + I(meanSPEI_early^2) + I(meanSPEI_late^2) + 
+                mBAL:meanSPEI_early + mBAL:meanSPEI_late +  
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                myNDVI + mean_aNDVI_early + mean_aNDVI_late + myNDVI:mean_aNDVI_early + myNDVI:mean_aNDVI_late +
+                density + ESPECE +
+                (1|ID_PROG) + (1|YEAR),
+              family=binomial, data=var_model_scaled)
+
+summary(m_meta)
+
+# get coefficients (estimates and se)
+coef <- as.data.frame(s[["coefficients"]][["cond"]])
+coef$var <- row.names(coef)
+
+
+# # extract fixed effects
+# f_meta <- fixef(m_meta)
+# f_meta <- as.data.frame(fixef(m_meta)$cond)
+# 
+# # get details on variance
+# library(MASS)
+# pp <- fixef(m_meta)$cond
+# vv <- vcov(m_meta)$cond #variance covariance matrix
+# #multivariate Normal sample of the parameters
+# samp <- MASS::mvrnorm(1000, mu=pp, Sigma=vv)
+
+confint(m_meta)
+s <- summary(m_meta)
+# drop1(m1)
+
+```
+
+For the meta analysis, we will need the estimates and standard errors for each species  
+
+```{r}
+coef <- coef %>% 
+  filter(str_detect(var, "^ESPECE")) %>% #keep only estimates for species
+  mutate(species = substr(var, 7,12)) # extract species names
+
+# save
+write.csv(coef, file = "C:/git/STOC/Variables/data/model/est_metaanalysis.csv", row.names = FALSE)
+write.csv(coef, file = "C:/Users/Nathalie Adenot/STOC/Variables/data/model/est_metaanalysis.csv", row.names = FALSE)
+
+```
+
+In the end I did not use this part because species have to be in interaction with the environmental variables. So I did a loop on species and ran the model on 1 species as a time.  
+This script can be found here: *"C:/git/STOC/cluster/script/full_model_species.R"*
+
+
+### Test for phenology  
+
+_Add phenology to the data_  
+```{r}
+pheno <- fread("C:/git/STOC/Variables/data/pheno_conv_model.csv") 
+pheno <- pheno %>% select(mean, YEAR, ESPECE)
+
+var_model_scaled_pheno <- var_model_scaled %>% 
+  left_join(pheno, by = c("YEAR", "ESPECE"))
+
+```
+
+_Run model_  
+```{r}
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI +  
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + meanNDVI:mean_aNDVI_early + 
+                density + mean +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_pheno)
+
+## Check model with DHARMa
+library(DHARMa)
+simres <- simulateResiduals(m1)
+plot(simres)
+
+## other method
+resid<-residuals(m1, type="pearson")
+par(mfrow=c(3,2))
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red')
+# residuals vs fitted
+plot(resid~fitted(m1)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+
+summary(m1)
+d1 <- drop1(m1, test="Chisq")
+print(d1)
+```
+
+
+
+#### Test for site's habitat  
+
+_Add habitat to the data_  
+
+I added this part to var_models.Rmd
+
+```{r}
+STOC <- fread("C:/git/STOC/Variables/data/data_STOC.csv")
+
+STOC <- STOC %>% select(ID_PROG, HABITAT) %>% distinct()
+
+var_model_scaled_hab <- var_model_scaled %>% 
+  left_join(STOC) %>% 
+  mutate(HABITAT = as.factor(HABITAT))
+
+```
+
+
+```{r}
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + early_SPEI + 
+                cat + mean_aT_early + mean_aT_late + I(mean_aT_late^2) + cat:mean_aT_early + cat:mean_aT_late +
+                meanNDVI + mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                density + HABITAT +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_hab)
+
+## Check model with DHARMa
+library(DHARMa)
+simres <- simulateResiduals(m1)
+plot(simres)
+
+## other method
+resid<-residuals(m1, type="pearson")
+par(mfrow=c(3,2))
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red')
+# residuals vs fitted
+plot(resid~fitted(m1)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+
+# m2 <- glmmTMB(cbind(JUV, AD) ~ mBAL + meanSPEI_early + meanSPEI_late + SPEI_early2 + SPEI_late2 + 
+#                 mBAL:meanSPEI_early + mBAL:meanSPEI_late +  
+#                 myTemp + mean_aT_early + mean_aT_late + aT_late2 + 
+#                 myNDVI + mdaNDVI + 
+#                 (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+#               family=binomial, data=var_model_scaled)
+
+summary(m1)
+d1 <- drop1(m1, test="Chisq")
+print(d1)
+```
+
+

@@ -1,0 +1,879 @@
+---
+title: "Variables model"
+author: "Nathalie Adenot"
+date: "2023-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+In this file, I will describe all the process of creating the variables I will use in the models. They are derived from climate data (SPEI, temperature) and NDVI, computed in other scripts.  
+
+```{r load packages}
+require(tidyverse)
+require(ggplot2)
+require(data.table)
+```
+
+
+# Productivity  
+To compute productivity, we need the number of Adults (AD) and Juveniles (JUV) of the different species captured each year in each station.  
+
+As in some cases we captured JUV and no AD, we will rather use the % of juveniles captured than the productivity per se, i.e. the number of juveniles produced per adult (JUV/AD). This is also what is done by euRING in the package cesr.  
+
+We will use the columns AD and JUV in a cbind() in binomial glmm, but I will also add a column Prod = nbJUV/nbTOT for visualization. 
+
+```{r productivity}
+
+## import STOC data
+dataSTOC <- fread("C:/git/STOC_reporting-master/data_DB/data.csv")
+
+# delete within session recaptures
+dataSTOC_recatch <- dataSTOC %>% 
+  group_by(DATE, BAGUE) %>% 
+  #filter(DATE == min(DATE)) %>% 
+  slice(1) %>% # takes the first occurrence if there is a tie
+  ungroup()
+# 414958 obs
+
+# Count number of JUV and AD captured
+STOC <- uniqueSTOC %>% 
+#  select(NEW.ID_PROG, ID_PROG, YEAR, AGE_first, ESPECE, HABITAT, MIGRATION) %>% 
+  dplyr::filter(AGE_first != "VOL") %>% 
+  mutate(AGE_first = as.factor(AGE_first)) %>% 
+  group_by(ID_PROG, YEAR, ESPECE, AGE_first, .drop = FALSE) %>% 
+  count() %>% 
+  pivot_wider(names_from = AGE_first, values_from = n) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG), ESPECE = as.factor(ESPECE))
+
+# Add %Juv
+STOC <- STOC %>% 
+  mutate(Prod = JUV/(JUV+AD))
+
+# Add traits "MIGRATION" and "HABITAT_SP"  
+SP_traits <- fread("C:/git/STOC_reporting-master/library/sp.csv") 
+  
+STOC <- left_join(STOC, SP_traits, by = c("ESPECE" = "SP"))
+
+# write.csv(STOC, file = "C:/git/STOC/Variables/data/model/Prod.csv", row.names = FALSE)
+
+```
+
+
+# Environmental variables  
+
+I then add the environmental variables (climate variables SPEI and Temperature + vegetation index NDVI).  
+
+We will need both mean value and anomalies to investigate the effect of the interaction. 
+
+## Mean values  
+
+```{r}
+
+## Import NDVI
+NDVI <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+
+# Mean spring NDVI
+NDVI_mean <- NDVI %>% 
+  mutate(JDay = yday(Date)) %>% 
+  dplyr::filter(JDay > 90 & JDay <196) %>% 
+  group_by(ID, Year) %>% 
+  summarise(mNDVI = mean(NDVI)) %>% 
+  rename(ID_PROG = ID, YEAR = Year) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG))
+# There are years without NDVI values for a few sites because they did not meet the quality criteria  
+
+## Import SPEI  
+SPEI <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+
+SPEI_s <- SPEI %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  mutate(JDay = yday(Date)) %>% 
+  arrange(ID_PROG) %>% 
+  na.locf() %>% #replace NAs by previous value
+  dplyr::filter(JDay > 90 & JDay <196) %>% #01/04 to 15/07
+  group_by(ID_PROG, YEAR) %>% 
+  summarise(sumSPEI = sum(SPEI), mSPEI = mean(SPEI)) %>%  #sum SPEI values
+  mutate(ID_PROG = as.factor(ID_PROG))
+
+
+## temperature
+data_temp <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+meanT <- data_temp %>% 
+  dplyr::filter(d > 90 & d <196) %>% 
+  group_by(an, ID_PROG) %>% 
+  summarise(mTemp = mean(T_Q)) %>% 
+  rename(YEAR = an) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG))
+
+## merge df  
+data_mod <- STOC %>% 
+  left_join(NDVI_mean, by = c("ID_PROG", "YEAR")) %>% 
+  left_join(SPEI_s, by = c("ID_PROG", "YEAR")) %>% 
+  left_join(meanT, by = c("ID_PROG", "YEAR")) %>% 
+  filter(YEAR > 1989) # we don't have climate data before 1990
+
+## Spatial  
+# Add coordinates
+coord_sites <- dataSTOC %>% 
+  select(ID_PROG, LON, LAT) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  distinct()
+
+data_mod <- data_mod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  left_join(coord_sites, by = "ID_PROG")
+
+
+# write.csv(data_mod, file = "C:/git/STOC/Variables/data/model/data_model.csv", row.names = FALSE)
+
+```
+
+
+## SPEI mean values: water balance  
+
+The SPEI gives an anomaly as it is standardized for each site. But we also want to know the effect of the mean climate variables and the interactions between mean and anomalies.  
+
+So now we will not consider the SPEI but only the difference between Precipitations and ETP.  
+
+We also think about using the actual evapotranspiration instead of the potential evapotranspiration.  
+
+```{r spatial mean values, echo=FALSE}
+
+meteo <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+
+# Calculate water balance
+meteo$BAL <- meteo$PRELIQ_Q - meteo$ETP_Q
+
+# Using actual evapotranspiration (ETa)
+meteo$BALa <- meteo$PRELIQ_Q - meteo$EVAP_Q
+
+# mean yearly water balance per site
+meteo_mean <- meteo %>% 
+  dplyr::filter(d > 90 & d <196) %>% 
+  dplyr::rename(YEAR = an) %>%
+  group_by(YEAR, ID_PROG) %>% 
+  summarise(mBAL = mean(BAL))  
+
+# using ETa
+meteo_mean_ETa <- meteo %>% 
+  dplyr::filter(d > 90 & d <196) %>% 
+  dplyr::rename(YEAR = an) %>% 
+  group_by(YEAR, ID_PROG) %>% 
+  summarise(mBALa = mean(BALa))
+
+# add to data_mod
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model.csv")
+# data_mod <- data_mod %>%
+#   left_join(meteo_mean, by = c("YEAR", "ID_PROG")) %>%
+#   left_join(meteo_mean_ETa, by = c("YEAR", "ID_PROG"))
+
+# write.csv(data_mod, file = "C:/git/STOC/Variables/data/model/data_model.csv", row.names = FALSE)
+
+# Overall site mean BAL
+mean_site <- data_mod %>% 
+  group_by(ID_PROG) %>% 
+  summarise(meanBAL = mean(mBAL, na.rm = TRUE)) %>% 
+  left_join(data_mod[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+# Overall site mean BALa
+mean_site_a <- data_mod %>% 
+  group_by(ID_PROG) %>% 
+  summarise(meanBALa = mean(mBALa, na.rm = TRUE)) %>% 
+  left_join(data_mod[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+
+##########################    Spatial distribution    ########################## 
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+# fond de carte
+france <- map_data("france")
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                 panel.background = element_rect(colour = NA),
+                 plot.background = element_rect(colour = NA),
+                 axis.title = element_text(face = "bold",size = rel(1)),
+                 axis.title.y = element_text(angle=90,vjust =2),
+                 axis.title.x = element_text(vjust = -0.2),
+                 legend.position=NULL)
+
+## mean BAL 
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site,aes(LON,LAT, colour=meanBAL),size=2.5)
+gg <- gg + scale_color_gradient2(midpoint=0,  low="#d53e4f", mid="#c1d8e6", high="#023858", space = "Lab")
+plot(gg)
+
+## BALa 
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_a,aes(LON,LAT, colour=meanBALa),size=2.5)
+gg <- gg + scale_color_gradient2(midpoint=0,  low="#d53e4f", mid="#c1d8e6", high="#023858", space = "Lab")
+plot(gg)
+
+
+#### With raw ETP ####  
+# Overall site mean ETP
+mean_site_ETP <- meteo %>% 
+  dplyr::filter(d > 90 & d <196) %>% 
+  group_by(ID_PROG) %>% 
+  summarise(meanETP = mean(ETP_Q, na.rm = TRUE), meanETa = mean(EVAP_Q, na.rm = TRUE)) %>% 
+  left_join(data_mod[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+# ETP
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_ETP,aes(LON,LAT, colour=meanETP),size=2.5)
+# gg <- gg + scale_color_gradient2(midpoint=0,  low="#d53e4f", mid="#c1d8e6", high="#023858", space = "Lab")
+plot(gg)
+# ETa
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_ETP,aes(LON,LAT, colour=meanETa),size=2.5)
+# gg <- gg + scale_color_gradient2(midpoint=0,  low="#d53e4f", mid="#c1d8e6", high="#023858", space = "Lab")
+plot(gg)
+
+# Difference between ETP and ETa  
+mean_site_ETP <- mean_site_ETP %>% 
+  mutate(diff = meanETP - meanETa)
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_ETP,aes(LON,LAT, colour=diff),size=2.5)
+gg <- gg + scale_color_gradient(low="#fde67e", high="#f03b20", space = "Lab")
+plot(gg)
+
+## Precipitations & Temperature 
+mean_site_TP <- meteo %>% 
+  group_by(ID_PROG) %>% 
+  summarise(sumP = sum(PRELIQ_Q, na.rm = TRUE), meanT = mean(T_Q, na.rm = TRUE)) %>% 
+  left_join(data_mod[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+# Plot map
+# Precipitation
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_TP,aes(LON,LAT, colour=sumP),size=2.5)
+gg <- gg + scale_color_gradient2(midpoint=32379,  low="#fc1405", mid="#c1d8e6", high="#023858", space = "Lab")
+plot(gg)
+# Temperature
+# median = 11.288
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = mean_site_TP,aes(LON,LAT, colour=meanT),size=2.5)
+gg <- gg + scale_color_gradient2(midpoint=11.288,  low="#023858", mid="#c1d8e6", high="#fc1405", space = "Lab")
+plot(gg)
+```
+
+Here we can see that it rains a lot in Brittany and not much in the Mediterranean region, which makes sens. 
+
+
+### Check standardization: SPEI vs. scaled water balance anomalies   
+
+We now want to check whether the standardization of the SPEI is concordant with what we would get by standardizing it ourselves (by substracting the local mean).  
+
+As the mean SPEI for each site is not 0, we wanted to check whether it is similar to what we would have when scaling our own variable.  
+
+So I start by adding columns for water balance anomalies, and then scale them.  
+
+```{r check standardization, echo=FALSE}
+
+# ID_PROG is in fact NEW.ID_PROG
+meteo <- meteo %>% 
+  rename(NEW.ID_PROG = ID_PROG) %>%
+  mutate(ID_PROG = as.numeric(gsub("\\D", "", NEW.ID_PROG))) #only keep numeric part
+
+
+# We start from the daily data: meteo  
+# aggregate on julian day (d)
+
+meteo_mBAL <- meteo %>% 
+  group_by(ID_PROG, d) %>% 
+  summarise_at(c("BAL", "BALa"), mean, na.rm = TRUE) %>% 
+  rename(mBAL = BAL) %>% 
+  rename(mBALa = BALa)
+
+# Get anomalies
+meteo <- meteo %>% 
+  left_join(meteo_mBAL, by = c("ID_PROG", "d")) %>%
+  mutate(aBAL = BAL - mBAL) %>%
+  mutate(aBALa = BALa - mBALa) %>%
+  rename(Date = DATE2) %>%
+  mutate(ID_PROG = as.factor(ID_PROG)) %>%
+  mutate(NEW.ID_PROG = as.factor(NEW.ID_PROG)) %>%
+  mutate(Date = as.character(Date))
+
+# Add SPEI
+spei <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+spei <- spei %>% 
+  pivot_longer(cols = 2:407, names_to = "NEW.ID_PROG", values_to = "SPEI") %>% 
+  mutate(ID_PROG = as.numeric(gsub("\\D", "", NEW.ID_PROG))) %>%  
+  mutate(Date = as.character(Date)) %>%   
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  mutate(NEW.ID_PROG = as.factor(NEW.ID_PROG))
+#  left_join(meteo[, c("ID_PROG", "Date", "BAL", "mBALd", "aBAL", "EVAP_Q")]) 
+
+meteo_mod <- meteo %>% 
+  select(14,17,4,6,8:11,15,16,18:21) %>% 
+  left_join(spei)
+
+# Keep only spring values
+spring_meteo_mod <- meteo_mod %>% 
+  rename(YEAR = an) %>% 
+  mutate(jDay = yday(Date)) %>% 
+  filter(jDay > 90 & jDay <196) 
+
+# scale aBAL & aBALa 
+s_meteo <- spring_meteo_mod %>% 
+  group_by(ID_PROG) %>% 
+  mutate(saBAL = scale(aBAL)) %>% 
+  mutate(saBALa = scale(aBALa)) %>% 
+  filter(!is.infinite(SPEI))
+
+# mean value per year and site
+s_meteo_mean <- s_meteo %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(jDay = as.factor(jDay)) %>% 
+  group_by(YEAR, ID_PROG) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE)
+
+
+# write.csv(s_meteo_mean, file = "C:/git/STOC/Variables/data/model/var_climat_mean.csv", row.names = FALSE)
+# write.csv(meteo_mod, file = "C:/git/STOC/Variables/data/model/var_climat_daily.csv", row.names = FALSE)
+
+
+```
+
+_Correlations between SPEI and scaled water balance anomalies_   
+
+There should be a high correlation between scaled water balance anomalies and SPEI, as SPEI is the standardized water balance for each site.  
+
+```{r correlations SPEI ~ BAL}
+
+# plot
+plot(SPEI ~ saBAL, data = s_meteo_mean)
+library(DataExplorer)
+
+plot_correlation(s_meteo_mean, cor_args = list("use" = "pairwise.complete.obs"), type="c") 
+plot_scatterplot(split_columns(s_meteo_mean)$continuous, by = "SPEI") 
+
+```
+
+SPEI and scaled water balance are higly correlated, so we can use the SPEI without beeing too concerned.  
+
+
+### Get anomalies  
+
+In the models, we don't want to study the effect of the mean climate variables, but the difference in climate at a given moment compared to the mean site value, and its interaction with the mean site value.  
+
+We don't need to get anomalies for the SPEI (and we already have anomalies for water balance), but we now need anomalies for *temperature* and *NDVI*.  
+
+```{r anomalies, echo=FALSE}
+# Import data SPEI & NDVI
+s_meteo_mean <- fread("C:/git/STOC/Variables/data/model/var_climat_mean.csv") #all climate variables, averaged /year /site
+meteo_mod <- fread("C:/git/STOC/Variables/data/model/var_climat_daily.csv") # all climate variables, /site /day
+
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model.csv")
+# data_mod$mTemp <- NULL
+
+# temperature
+data_temp <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+spring_temp <- data_temp %>% 
+  filter(d > 59 & d <197)  #keep only spring values (01/04 - 14/07)
+  
+# local means
+meanT <- spring_temp %>% 
+  # mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  group_by(d, ID_PROG) %>% #mean per day and not per year
+  summarise(mTemp = mean(T_Q, na.rm = TRUE))
+
+# merge temperature with the other variables
+meteo_mod <- meteo_mod %>% 
+  mutate(d = yday(Date)) %>% # Add Julian day column to meteo_mod
+    left_join(meanT, by = c("d", "ID_PROG")) 
+  # filter(YEAR > 1990)
+
+## Get daily anomalies (for NDVI & Temperatures)
+# Temperature anomalies
+meteo_mod <- meteo_mod %>% 
+  mutate(aTemp = T_Q - mTemp)
+# write.csv(meteo_mod, file = "C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv", row.names = FALSE)
+Temp_mod <- meteo_mod %>% 
+  group_by(ID_PROG, an) %>%
+  summarise(mdaTemp = mean(aTemp, na.rm =TRUE)) %>%
+  rename(YEAR = an) %>%
+  filter(YEAR != 2023)
+data_mod <- data_mod %>% left_join(Temp_mod)
+
+# NDVI
+ndvi <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+ndvi$d <- yday(ndvi$Date)
+ndvi <- ndvi %>% 
+  rename(ID_PROG = ID)
+# mean NDVI for each Julian day (period)
+meanNDVI <- ndvi %>%  
+  group_by(ID_PROG, d) %>% 
+  summarise(mNDVI = mean(NDVI, na.rm = TRUE)) %>% 
+  filter(d < 200)
+# anomalies
+meanNDVI <- meanNDVI %>%  
+  left_join(ndvi, by = c("ID_PROG", "d")) %>% 
+  mutate(daNDVI = NDVI - mNDVI) %>% 
+  rename(YEAR = Year) 
+# write.csv(meanNDVI, file = "C:/git/STOC/Variables/data/model/var_NDVI_daily_anomalies.csv", row.names = FALSE)
+
+NDVI_mod <- meanNDVI %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  group_by(ID_PROG, YEAR) %>% 
+  summarise(mdaNDVI = mean(daNDVI, na.rm = TRUE))
+
+data_mod <- data_mod %>% left_join(NDVI_mod)
+
+## Get annual anomalies
+# Temperature  
+locmeanTemp <- meteo_mod %>% 
+  group_by(ID_PROG) %>% 
+  summarise(locTemp = mean(T_Q, na.rm = TRUE))
+ymean_meteo <- meteo_mod %>% 
+  group_by(ID_PROG, an) %>% 
+  summarise(myTemp = mean(T_Q, na.rm = TRUE)) %>% 
+  left_join(locmeanTemp) %>% 
+  mutate(yaTemp = myTemp - locTemp) %>% 
+  rename(YEAR = an)
+data_mod <- data_mod %>% 
+  left_join(ymean_meteo)
+
+# NDVI 
+locmeanNDVI <- ndvi %>% 
+  group_by(ID_PROG) %>% 
+  summarise(locNDVI = mean(NDVI, na.rm = TRUE))
+ymean_NDVI <- ndvi %>% 
+  group_by(ID_PROG, Year) %>% 
+  summarise(myNDVI = mean(NDVI, na.rm = TRUE)) %>% 
+  left_join(locmeanNDVI) %>% 
+  mutate(yaNDVI = myNDVI - locNDVI) %>% 
+  rename(YEAR = Year)
+data_mod <- data_mod %>% 
+  left_join(ymean_NDVI)
+
+# select useful columns (I do it afterwards so I'm not sure I have created all the variables at this point of the Rmd)
+data_mod_ <- data_mod %>% 
+  select(ID_PROG:MIGRATION, LON, LAT, sumSPEI, mSPEI, myTemp, mdaTemp, myNDVI, mdaNDVI)
+
+# write.csv(data_mod_, file = "C:/git/STOC/Variables/data/model/data_model_a2703.csv", row.names = FALSE)
+
+```
+I now have 2 types of anomalies:  
+- the *anomalies of annual means* (ya... : I first calculate the mean values per year and site, and substract the mean value of a site across all the years)  
+- the *mean of anomalies* (mda... : I first calculate anomalies for each day compared to the mean value for this day across years, and then average the anomalies during spring.  
+
+But I was not convinced regarding the mean of anomalies as I was not sure it would give much information.  
+So Romain suggested to aggregate anomalies during 2 periods of similar duration (15/03 - 15/05 and 15/05 to 15/07), and to use both mean value and sd in the models.  
+There might not be correlation between anomalies in early and late spring, so we should be able to use both variables in the models.  
+Mean and sd are probably correlated, but it is easy to decorrelate them using variation coefficient.  
+
+```{r anomalies Romain}
+
+## Anomalies for temperature  
+# Calculate mean and sd for temperature for each period: 15/03-15/05 (74-135) & 15/05-15/07 (135-196)
+# In meteo_mod we only have temperature from 01/04 to 14/07 so I need to start over again
+
+s_meteo_mean <- fread("C:/git/STOC/Variables/data/model/var_climat_mean.csv") #all climate variables, averaged /year /site
+meteo_mod <- fread("C:/git/STOC/Variables/data/model/var_climat_daily.csv") # all climate variables, /site /day
+
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_a.csv")
+data_mod$mTemp <- NULL
+
+# temperature
+data_temp <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+spring_temp <- data_temp %>% 
+  filter(d > 73 & d <197)  #keep only spring values (15/03 - 15/07)
+  
+# local means
+meanT <- spring_temp %>% 
+  # mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  group_by(d, ID_PROG) %>% #mean per day and not per year
+  summarise(mTemp = mean(T_Q, na.rm = TRUE))
+
+# merge temperature with the other variables
+meteo_mod <- meteo_mod %>% 
+  mutate(d = yday(Date)) %>% # Add Julian day column to meteo_mod
+    left_join(meanT, by = c("d", "ID_PROG")) 
+
+## Get daily anomalies (for NDVI & Temperatures)
+# Temperature anomalies
+meteo_mod <- meteo_mod %>% 
+  mutate(aTemp = T_Q - mTemp)
+
+# Now it changes: we want 2 distinct periods
+meteo_mod <-  meteo_mod %>%  rename(YEAR = an)
+# early spring  
+Temp_mod_early <- meteo_mod %>% 
+  filter(d > 73 & d < 135) %>% #keep 15/03-14/05
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maTemp_early = mean(aTemp, na.rm = TRUE)) #mean
+Temp_mod_early_sd <- meteo_mod %>% 
+  filter(d > 73 & d < 135) %>% #keep 15/03-14/05
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(sdaTemp_early = sd(aTemp, na.rm = TRUE))#sd
+# late spring  
+Temp_mod_late <- meteo_mod %>% 
+  filter(d >= 135 & d < 197) %>% #keep 15/05-15/07
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maTemp_late = mean(aTemp, na.rm = TRUE)) #mean
+Temp_mod_late_sd <- meteo_mod %>% 
+  filter(d >= 135 & d < 197) %>% 
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(sdaTemp_late = sd(aTemp, na.rm = TRUE))  #sd
+
+data_mod <- data_mod %>% 
+  left_join(Temp_mod_early) %>% 
+  left_join(Temp_mod_early_sd) %>% 
+  left_join(Temp_mod_late) %>% 
+  left_join(Temp_mod_late_sd)
+
+
+
+## Anomalies for NDVI 
+ndvi <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+ndvi$d <- yday(ndvi$Date)
+ndvi <- ndvi %>% 
+  mutate(ID_PROG = ID)
+meanNDVI <- ndvi %>% 
+  group_by(ID_PROG, d) %>% 
+  summarise(mNDVI = mean(NDVI, na.rm = TRUE))
+meanNDVI <- meanNDVI %>% 
+  left_join(ndvi, by = c("ID_PROG", "d")) %>% 
+  mutate(mdaNDVI = NDVI - mNDVI) %>% 
+  rename(YEAR = Year) 
+
+# Now it changes: we want 2 distinct periods
+# early spring  
+NDVI_early <- meanNDVI %>% 
+  filter(d > 73 & d < 135) %>% #keep 15/03-14/05
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maNDVI_early = mean(mdaNDVI, na.rm = TRUE)) #mean
+NDVI_early_sd <- meanNDVI %>% 
+  filter(d > 73 & d < 135) %>% #keep 15/03-14/05
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maNDVI_early_sd = sd(mdaNDVI, na.rm = TRUE)) #sd
+# late spring  
+NDVI_late <- meanNDVI %>% 
+  filter(d >= 135 & d < 197) %>% 
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maNDVI_late = mean(mdaNDVI, na.rm = TRUE)) #mean
+NDVI_late_sd <- meanNDVI %>% 
+  filter(d >= 135 & d < 197) %>% 
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(maNDVI_late_sd = sd(mdaNDVI, na.rm = TRUE))  #sd
+
+data_mod <- data_mod %>% 
+  left_join(NDVI_early) %>% 
+  left_join(NDVI_early_sd) %>% 
+  left_join(NDVI_late) %>% 
+  left_join(NDVI_late_sd)
+
+# write.csv(data_mod, file = "C:/git/STOC/Variables/data/model/data_model_all_a.csv", row.names = FALSE)
+
+```
+
+In the end I don't use Romain's anomalies, only the averaged anomalies.  
+In the final model, I distinguish early and late anomalies, but I keep the spring variable for mean values (mean NDVI, T and BAL).  
+
+So I will put these different variables in a single dataframe for the models.  
+
+## Final dataframe  
+
+In this dataframe I want:  
+- Productivity  
+- spring NDVI  
+- spring Temperature  
+- spring BAL  
+- NDVI anomalies early/late  
+- Temperature anomalies early/late  
+- SPEI early/late
+
+I use the median hatching date 14/05 (Julian day 134) as a limit between early and late breeding period.  
+
+
+```{r}
+# import climate data
+climate <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv") # all climate variables, /site /day
+# get mean values  
+climate_mean <- climate %>% 
+  filter(d > 73 & d < 197) %>% 
+  rename("YEAR" = "an") %>% 
+  group_by(YEAR, ID_PROG) %>% 
+  summarise(mean_T = mean(T_Q, na.rm = TRUE), mean_BAL = mean(BAL, na.rm = TRUE))
+
+# climate 2 periods  
+climate_2p <- fread("C:/git/STOC/Variables/data/model/mean_climate_2periods.csv") 
+climate_2p <- climate_2p %>% select(ID_PROG, YEAR, mean_aT_early:late_SPEI)
+
+# import NDVI
+ndvi <- fread("C:/git/STOC/Variables/data/model/var_NDVI_daily_anomalies.csv")
+# calculate mean NDVI per year 
+ndvi_mean <- ndvi %>% group_by(YEAR, ID_PROG) %>% 
+  summarise(meanNDVI = mean(NDVI, na.rm = TRUE))
+# NDVI 2 periods:
+ndvi_2p <- fread("C:/git/STOC/Variables/data/model/mean_ndvi_2periods.csv")
+ndvi_2p <- ndvi_2p %>% select(YEAR, ID_PROG, mean_aNDVI_early, mean_aNDVI_late)  
+
+# import temperature categories  
+temp_cat <- fread("C:/git/STOC/Variables/data/temp_cat_sites.csv")
+
+# import productivity  
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_a.csv")
+
+
+# Merge everything  
+df_mod <- data_mod %>% 
+  select(ID_PROG:MIGRATION) %>% 
+  left_join(climate_mean) %>% 
+  left_join(temp_cat[, c(1,3)]) %>% 
+  left_join(climate_2p) %>% 
+  left_join(ndvi_mean) %>% 
+  left_join(ndvi_2p)
+
+write.csv(df_mod, file = "C:/git/STOC/Variables/data/model/df_model_final.csv", row.names = FALSE)
+```
+
+
+### Spring variables  
+In addition to testing early and late variables, I want to test spring variables to be able to compare with other studies and see if we gain information by using a finer time scale.  
+
+```{r}
+# import climate data
+climate <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv") # all climate variables, /site /day
+
+# get mean spring temperature anomalies  
+climate_mean <- climate %>% 
+  filter(d > 73 & d < 197) %>% 
+  rename("YEAR" = "an") %>% 
+  group_by(YEAR, ID_PROG) %>% 
+  summarise(mean_aT_spring = mean(aTemp, na.rm = TRUE))
+
+
+# import NDVI
+## Anomalies for NDVI 
+ndvi <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+ndvi$d <- yday(ndvi$Date)
+ndvi <- ndvi %>% 
+  mutate(ID_PROG = ID)
+meanNDVI <- ndvi %>% 
+  group_by(ID_PROG, d) %>% 
+  summarise(mNDVI = mean(NDVI, na.rm = TRUE))
+meanNDVI <- meanNDVI %>% 
+  left_join(ndvi, by = c("ID_PROG", "d")) %>% 
+  mutate(mdaNDVI = NDVI - mNDVI) %>% 
+  rename(YEAR = Year) 
+
+# spring  
+NDVI_spring <- meanNDVI %>% 
+  filter(d > 73 & d < 197) %>% #keep 15/03-14/05
+  group_by(ID_PROG, YEAR) %>% 
+  summarize(aNDVI_spring = mean(mdaNDVI, na.rm = TRUE)) #mean
+
+# spring SPEI  
+spei_month4 <- fread("C:/git/STOC/Variables/data/spei_month4.csv") # monthly data
+spei_month4 <- spei_month4 %>% select(Year, ID_PROG, SPEI) %>% rename(YEAR = Year)
+
+
+# merge
+spring_anomalies <- climate_mean %>% left_join(NDVI_spring) %>% left_join(spei_month4)
+
+write.csv(spring_anomalies, file = "C:/git/STOC/Variables/data/spring_anomalies.csv", row.names = FALSE)
+
+## Add to model df  
+var_mod <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+
+var_mod <- var_mod %>% left_join(spring_anomalies) %>% 
+  mutate(mean_aT_spring = scale(mean_aT_spring), aNDVI_spring = scale(aNDVI_spring), SPEI = scale(SPEI))
+write.csv(var_mod, file = "C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv", row.names = FALSE)
+
+```
+
+### Habitat  
+
+We want to test if the habitat has an influence on the response of birds to drought. 
+So I need to add habitat to the df:
+
+```{r}
+# import data with habitat
+STOC <- fread("C:/git/STOC/Variables/data/data_STOC.csv")
+
+# import model data  (all species)
+var_mod <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+
+# get the habitat for each site
+STOC <- STOC %>% select(ID_PROG, HABITAT) %>% distinct()
+
+# Add to var_model  
+var_mod_hab <- var_mod %>% 
+  left_join(STOC) 
+
+summary(var_mod_hab)
+
+```
+There are 3 habitats: "Aquatique", "STOC-Rozo" and "Terrestre".  
+But "STOC-rozo" sites actually correspond to aquatic habitats, but with a specific protocol.  
+We can group both as "Aquatique".  
+
+```{r}
+# Transform STOC-Rozo in "Aquatique"
+var_mod_hab <- var_mod_hab %>% 
+  mutate(HABITAT = gsub("STOC-rozo", "Aquatique", HABITAT))%>% 
+  mutate(HABITAT = as.factor(HABITAT))
+
+summary(var_mod_hab)
+
+write.csv(var_mod_hab, file = "C:/git/STOC/Variables/data/model/var_model_allsp_scaled_hab.csv", row.names = FALSE)
+```
+
+### Phenology  
+We also want to test the effect of phenology, to see if the difference in productivity is due to an earlier or a later breeding.  
+
+We want to add phenology as an anomaly as we are not interested in whether the species tends to reproduce early or late, but in whether this particular year reproduction was early or late.  
+
+```{r}
+var_mod_hab <- fread("C:/git/STOC/Variables/data/model/var_model_allsp_scaled_hab.csv")
+
+# Import phenology data
+pheno <- fread("C:/git/STOC/Variables/data/pheno_conv_model.csv") # 50 species
+pheno <- pheno %>% select(mean, YEAR, ESPECE) %>% rename(pheno = mean)
+# 1 value per species and per year, Julian day
+
+# Transform phenology in an anomaly 
+# get mean fledging date
+pheno_anom <- pheno %>% 
+  group_by(ESPECE) %>% 
+  summarise(mean_pheno = mean(pheno)) 
+
+# get anomalies
+pheno <- pheno %>% 
+  left_join(pheno_anom, by = "ESPECE") %>% 
+  mutate(a_pheno = pheno - mean_pheno) #<0 if earlier, >0 if later than usual
+
+var_mod_pheno <- var_mod_hab %>% 
+  right_join(pheno, by = c("YEAR", "ESPECE"))
+
+write.csv(var_mod_pheno, file = "C:/git/STOC/Variables/data/model/var_model_50sp_scaled_pheno.csv", row.names = FALSE)
+
+```
+
+
+
+
+## Life history traits  
+
+After testing the effect of environmental variables, I would like to test the effect of some life history traits:  
+- *migration status*  
+- *number of clutches*  
+- *habitat* (after testing the effect of the site's habitat)  
+- *thermal specialisation index*  
+We talked about including diet but it might be very correlated with migration status (long-distance migrants are insectivorous)  
+
+I already have migration status and habitat in my dataset, but I need to add the number of clutches and thermal specialisation index.  
+
+```{r}
+
+# import THV Storchova
+THV <- fread("C:/git/STOC/Variables/data/THV/Storchova.csv")
+
+# import THV Moussus
+THV_Moussus <- fread("C:/git/STOC/Variables/data/THV/THV_Moussus.csv")
+
+nom_especes <- fread("C:/git/STOC/Variables/data/THV/nom_especes.csv", encoding = "Latin-1")
+
+
+```
+
+For the number of clutches, we have 2 resources: Storchova and Moussus.  
+I want to see if they say the same thing :  
+
+```{r}
+# Compare number of clutches, Storchova and Moussus  
+plot_clutches <- THV_Moussus %>% 
+  left_join(THV, by = "Species") %>% 
+  select(Species, `Broods per year`, Brood) %>% 
+  rename(Moussus = Brood, Storchova = `Broods per year`) %>% 
+  pivot_longer(cols = c("Moussus", "Storchova"), names_to = "Source")
+
+gg <- ggplot(data=plot_clutches, aes(x=Species, y=value, fill=Source)) + 
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme(axis.text.x = element_text(angle=90)) +
+  ggtitle("Comparaison nombre de pontes Moussus - Storchova") +
+  ylab("Nombre de pontes")
+gg
+```
+
+It is the same for most species, so I will keep Storchova as there are more species.  
+
+
+```{r}
+
+# import model data  (all species)
+var_mod <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+
+# import output metaanalysis
+data_meta <- fread("C:/git/STOC/cluster/data/data_metaanalysis.csv")
+
+# check if all species are in Storchova  
+setdiff(unique(var_mod$ESPECE), THV$Species)
+setdiff(THV$Species, unique(var_mod$ESPECE))
+  
+# merge THV from different sources with data
+THV_all <- var_mod %>% 
+  left_join(nom_especes, by = c("ESPECE" = "SP")) %>% 
+  left_join(THV, by = c("nom_sc" = "Species")) %>% 
+  left_join(THV_Moussus, by = c("nom_sc" = "Species")) %>% 
+  rename(Species = nom_sc) %>% 
+  dplyr::select(Species, ESPECE, nom_fr, HABITAT_SP, MIGRATION, Clutch_MEAN, `Broods per year`, TSI) %>% 
+  filter(!is.na(MIGRATION)) %>% 
+  distinct()
+
+write.csv(THV_all, file = "C:/git/STOC/Variables/data/THV/THV_all_sp.csv", row.names = FALSE)
+
+# merge with meta_data
+data_meta_THV <- data_meta %>% 
+  mutate(phylo = gsub(pattern = "Parus_caeruleus", "Cyanistes_caeruleus", phylo)) %>% 
+  mutate(Species = gsub("_", " ", phylo)) %>% 
+  left_join(THV_all, by = "Species") 
+
+write.csv(data_meta_THV, file = "C:/git/STOC/Variables/data/THV/data_meta_THV_all_sp.csv", row.names = FALSE)
+
+```
+
+### TSI  
+
+Source: Jiguet 2007  
+
+```{r}
+sti <- fread("C:/git/STOC/Variables/data/THV/espece_indicateur_fonctionel_Jiguet2007.csv")
+
+THV <- fread("C:/git/STOC/Variables/data/THV/THV_all_sp.csv")  
+
+THV <- THV %>% 
+  left_join(sti[,c("pk_species", "sti_europe")], by = c("ESPECE" = "pk_species"))
+
+write.csv(THV, file = "C:/git/STOC/Variables/data/THV/THV_all_sp.csv", row.names = FALSE)
+
+```
+

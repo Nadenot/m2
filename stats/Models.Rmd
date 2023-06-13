@@ -1,0 +1,1068 @@
+---
+title: "Models"
+author: "Nathalie Adenot"
+date: "2023-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r packages, echo=FALSE}
+require(tidyverse)
+require(glmmTMB)
+require(data.table)
+require(DHARMa)
+library(mgcv)
+
+#libraries for spatial series analyses
+library(spdep) #to extracted the neighbors is a spatial data
+library(ade4)  #used for plotting spatial data
+library(spatialreg) #used for spatial data modelling
+library(gwrr)  #to run geographically weighted regression
+
+```
+## Models glmmTMB: mean spring  
+
+
+### Explore relationships  
+Now that we have all our variables, we will plot them against productivity to see if the relationships are linear.  
+
+```{r plot relationships productivity, echo=FALSE}
+
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_all_a.csv")
+
+# data_mod_prod <- data_mod %>% 
+#   mutate(prod = JUV/(JUV+AD))
+# data_mod_prod$prod[is.infinite(data_mod_prod$prod)] <- NA
+
+# write.csv(data_mod_prod, file = "C:/git/STOC/Variables/data/data_all_var.csv", row.names = FALSE)
+
+# mean NDVI
+reg<-lm(Prod ~ myNDVI, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=myNDVI, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+  # ggtitle(eq)
+plot(sp)
+
+# anomalies NDVI  
+# mean daily
+reg<-lm(Prod ~ mdaNDVI, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=mdaNDVI, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+  # ggtitle(eq)
+plot(sp)
+
+# mean annual  
+reg<-lm(Prod ~ yaNDVI, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=yaNDVI, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+#   ggtitle(eq)
+plot(sp)
+
+
+## SPEI
+reg<-lm(Prod ~ sumSPEI, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=sumSPEI, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+#   ggtitle(eq)
+plot(sp)
+
+# mean
+sp <- ggplot(data=data_mod, aes(x=mSPEI, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+# Water balance  
+sp <- ggplot(data=data_mod, aes(x=mBAL, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+# Temperature
+## Mean
+reg<-lm(Prod ~ myTemp, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=myTemp, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+#   ggtitle(eq)
+plot(sp)
+
+## Anomalies 
+# Daily anomalies 
+reg<-lm(Prod ~ mdaTemp, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=mdaTemp, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+#   ggtitle(eq)
+plot(sp)
+
+# annual anomalies
+reg<-lm(Prod ~ yaTemp, data = data_mod)
+coeff=coefficients(reg)
+# Equation de la droite de regression :  
+eq = paste0("y = ", round(coeff[2],1), "*x + ", round(coeff[1],1))
+# Graphe
+sp <- ggplot(data=data_mod, aes(x=yaTemp, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+#   ggtitle(eq)
+plot(sp)
+```
+
+It's hard to see any pattern on the points cloud, but the geom_smooth does not show a linear trend. 
+I will still start by using linear models and see how residuals look like.  
+
+## Linear models  
+
+### Standardize variables  
+
+To use glmmTMB, we HAVE TO scale the variables. 
+
+```{r standardize, echo=FALSE}
+
+data_mod_s <- data_mod %>% 
+  mutate(scaled_NDVI = scale(mNDVI)) %>% 
+  mutate(scaled_SPEI = scale(sumSPEI)) %>% 
+  mutate(scaled_Temp = scale(myTemp)) %>% 
+  mutate(scaled_aNDVI = scale(yaNDVI)) %>% 
+  mutate(scaled_aTemp = scale(yaTemp)) %>% 
+  mutate(scaled_mBAL = scale(mBAL))
+
+# ## Add coordinates (for spatial autocorrelation)  
+# coord <- data_temp %>% 
+#   select(LAMBX, LAMBY, ID_PROG) %>% 
+#   distinct()
+# 
+# data_mod_s <- data_mod_s %>% 
+#   left_join(coord, by = "ID_PROG")
+
+```
+
+### Univariate models  
+
+#### SPEI  
+
+```{r model SPEI, echo=FALSE}
+# SPEI
+m_spei <- glmmTMB(cbind(JUV, AD) ~ scaled_SPEI[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+family=binomial, data=data_mod_s)
+
+summary(m_spei)
+
+# Interaction with water balance
+m_spei_BAL <- glmmTMB(cbind(JUV, AD) ~ scaled_SPEI[,1] + scaled_mBAL[,1] + scaled_SPEI[,1]:scaled_mBAL[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+family=binomial, data=data_mod_s)
+
+summary(m_spei_BAL)
+
+# utiliser DHARMa (on a beaucoup de données donc on va forcément avoir une variation significative)
+# ggpredict
+
+```
+
+Here I wanted to try a model with both SPEI and water balance, and the interaction between those terms, but then I realized that both are highly correlated (~0.7) so we can't include both in a model.  
+
+
+```{r ex Romain, echo=FALSE, eval=FALSE}
+
+# Examples sent by Romain:
+
+  glmm2 <- glmmTMB(occurence~ area_poly_st + habitat + day_night + rats +  (1|id_motu) + (1|bird_id),
+                family = "poisson", data=tab_glmm_i[habitat != "mudflat",])
+sglmm2 <- summary(glmm2)
+print(sglmm2)
+
+
+library(DHARMa)
+
+
+
+# Effet des rats sur la présence des courlis sur chaque habitats
+library(ggeffects)
+ggpred <- ggpredict(glmm,terms = c("habitat","rats","day_night"))
+print(ggpred)
+plot(ggpred)
+```
+
+_Model validation_  
+*Méthode Outreman*  
+
+```{r model validation Outreman, echo=FALSE}
+
+resid<-residuals(m_spei, type="pearson")
+
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # no normality
+
+# residuals vs fitted
+plot(resid~fitted(m_spei)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+# residuals vs scaled SPEI
+plot(resid~data_mod_s$scaled_SPEI[!is.na(data_mod_s$scaled_SPEI[,1]),], col='blue', pch=16)
+abline(h = 0)
+
+```
+
+*DHARMa*  
+```{r DHARMa SPEI, echo=FALSE}
+
+simulationOutput <- simulateResiduals(fittedModel = m_spei, plot = T)
+```
+ 
+##### Check autocorrelation  
+_Temporal autocorrelation_  
+
+```{r temporal autocorrelation SPEI, echo=FALSE}
+
+acf(resid)
+
+```
+ 
+_Spatial autocorrelation_  
+
+```{r spatial autocorrelation SPEI, echo=FALSE, eval=FALSE}
+
+#      1 - Examine the connection between points ====================
+# To investigate the various criteria of connection between points we need to
+# extract the coordinates in a separate object 
+xy= unique(data_mod_s[,13:14])
+
+#             A - If we choose that points are connected to their 4th nearest neighbors (the "rook connection") ----
+div.knear4<-knearneigh(as.matrix(xy),4) #to extract the neighbour points
+div.knear4
+#what is the information included in the $nn?
+#response : ID of the 4 nearest neighbours for each point
+# ex: the point 1 has for nearest neighbours the points 2, 3, 10, 4
+
+knn2nb(div.knear4) #knn2nb convert the object returned by the function knearneigh to a class nb (necessary for the subsequent function)
+# what is the information printed ? 
+#Number of points; number of relationships between points (4 * 68)
+# percentage of nonzero weight = % of links among all possible links
+
+knn2nb(div.knear4)  # transformation to get as many lists than points/observation
+plot(knn2nb(div.knear4), xy, add=TRUE) # doesn't work
+# plot lines between nearest neighbours
+
+#             B - If we specify a queen type of connection with points connected to their 8th nearest neighbors (the "queen connection") ----
+div.knear8<-knearneigh(as.matrix(xy),8)
+div.knear8
+knn2nb(div.knear8)
+#what is the difference with the first criterion? 
+#response : we take the 8 nearest neighbours
+
+# Plotting the connection between points for each criterion
+par(mfrow=c(1,2))
+ade4::s.label(xy, ylim=c(min(data_mod_s[,14])-10,max(data_mod_s[,14])+10), xlim=c(min(data_mod_s[,13])-10,max(data_mod_s[,13])+10),  clabel=0.4, cpoint=1,neig=nb2neig(knn2nb(div.knear4)))
+ade4::s.label(xy, ylim=c(min(data_mod_s[,14])-10,max(data_mod_s[,14])+10), xlim=c(min(data_mod_s[,13])-10,max(data_mod_s[,13])+10),  clabel=0.4, cpoint=1,neig=nb2neig(knn2nb(div.knear8)))
+# comment those graphs. be careful, the distance between points is not always 10km
+# The 1st graph is the same as previously, the 2nd similar with 8 neighbours
+# about the code : 
+# nb2neig(knn2nb()) transform the matrix to subsequently use it is ade4
+# neig= define the connection matrix between points
+
+#             Transform the list of the names of the neighbors to a 2 by 2 matrix of neighboors with "0" and "1" -----
+w2<-knn2nb(div.knear4)
+str(w2)                     # we have as much list as points
+# nb2neig(knn2nb(div.knear4)) # these lists are transformed in a 2D matrix with 0 or 1.
+
+
+#      2 - Define the spatial weight matrix  ==================================
+#Note that spatial weight matrix is always associated to a neighborhood matrix (if two points are not considered as connected,
+#their spatial weight is of "0")
+
+#             A - In the case in which points are connected to their 4th nearest neighbors (the "rook connection") ----
+#compare spatial weighted matrix with rook connection (that is with the 4th nearest neighbors)
+#but different weight formulation (binary B vs standardized W)
+pond4.bin<- nb2listw(knn2nb(div.knear4), style="B",zero.policy=TRUE)
+# "B" for binary = all connections have the same weight
+pond4.stan<- nb2listw(knn2nb(div.knear4), style="W", zero.policy=TRUE)
+# "W" for standardized = 1/nb of connections
+
+pond4.bin
+pond4.stan
+#see slide 110 for the calculation of S0, S1 and S2
+
+pond4.bin$weights
+pond4.stan$weights
+
+#             B - In the case in which points are connected to their 8th nearest neighbors (the "queen connection") ----
+#compare spatial weighted matrix with  queen connection
+#but different weight formulation (binary B vs standardized W)
+pond8.bin<- nb2listw(knn2nb(div.knear8), style="B",zero.policy=TRUE)
+pond8.stan<- nb2listw(knn2nb(div.knear8), style="W", zero.policy=TRUE)
+pond8.bin$weights
+pond8.stan$weights
+
+### THIS IS BONUS - IF YOU WANT TO EXPLORE A SCENARIO CONSIDERING THE GEOGRAPHIC DISTANCE  ##################
+#             C - In the case in which points are connected to their 4th nearest neighbors but the weight is inversely 
+#                 proportional to the distance (weight = 1/distance)
+#To get inverse distance, we need to calculate the distances between all of the neighbors. 
+#for this we will use nbdists, which gives us the distances in a similar structure to our
+#input neighbors list. To use this function we need to input the neighbors list and the coordinates.
+coords <- cbind(coord$LAMBX,coord$LAMBY)
+distances <- nbdists(knn2nb(div.knear4),coords)
+distances[1]
+
+#Calculating the inverse distances (the 1/distance gives very small values so we make an adjustement)
+invd1 <- lapply(distances, function(x) (1/x))
+length(invd1)
+invd1[1]
+
+invd.weights <- nb2listw(knn2nb(div.knear4),glist = invd1,style = "B")
+summary(invd.weights)
+invd.weights$weights[1]
+
+#      3 - Calculate and test autocorrelation index  =================
+#             1 - The Moran Global Index                                           ----
+# Tests could be performed only when you have defined a spatial weight matrix
+# here the values of interest (richness of birds and richness of plants) are quantitative so we can use 
+# a Moran test(otherwise for qualitative data we could perform a joint count test)
+# Perform the moran test for plant and bird richnesses using the connection criterion 4 neighbors and binary weights 
+
+#                   A - In the case in which points are connected to their 4th nearest neighbors (the "rook connection") ----
+# BINARY WEIGHT
+moran.test(data_mod_s$mNDVI[!is.na(data_mod_s$mNDVI)], pond4.bin)   
+# test for spatial autocorrelation
+moran.test(div35[,2], pond4.bin) #for the BIRDS
+
+# how do you interpret the output? is there spatial dependency? 
+# both tests are significant so there is spatial dependency
+# Moran I statistic > 0 --> positive aggregation, points closer together are similar
+# spatial correlation seems to be a bit higher for plants than birds
+
+# ROW STANDARDIZED WEIGHT
+moran.test(div35[,1], pond4.stan) #for the PLANTS
+moran.test(div35[,2], pond4.stan) #for the BIRDS
+
+# how do you interpret the output? is there spatial dependency? 
+# it gives the same results
+
+#                   B - In the case in which points are connected to their 8th nearest neighbors (the "queen connection") ----
+# BINARY WEIGHT
+moran.test(div35[,1], pond8.bin) #for the PLANTS
+moran.test(div35[,2], pond8.bin) #for the BIRDS
+# all points have the same weight
+
+# ROW STANDARDIZED WEIGHT
+# it gives more weight to isolated points: with 4 points, if all points are related, they will have a standardized weight of 0.25, whereas if only 2 are connected they will have a weight of 1
+moran.test(div35[,1], pond8.stan) #for the PLANTS
+moran.test(div35[,2], pond8.stan) #for the BIRDS
+# still positive significant spatial correlation, but this time higher for birds than plants ,probably because plants have a lower dispersal than birds
+
+```
+
+
+#### NDVI  
+For NDVI, the correlation coefficient between mean NDVI and anomalies is only of 0.33, so we can include both in the model.  
+```{r model NDVI, echo=FALSE}
+
+# mean NDVI 
+m_ndvi <- glmmTMB(cbind(JUV, AD) ~ scaled_NDVI[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+family=binomial, data=data_mod_s)
+summary(m_ndvi)
+
+# NDVI anomalies 
+m_ndvi <- glmmTMB(cbind(JUV, AD) ~ scaled_NDVI[,1] + scaled_aNDVI[,1] + scaled_NDVI[,1]:scaled_aNDVI[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE), family=binomial, data=data_mod_s)
+summary(m_ndvi)
+
+```
+
+```{r check model NDVI, echo=FALSE}
+
+resid<-residuals(m_ndvi, type="pearson")
+
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # no normality
+
+# residuals vs fitted
+plot(resid~fitted(m_ndvi)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+# residuals vs scaled NDVI
+plot(resid~data_mod_s$scaled_NDVI[!is.na(data_mod_s$scaled_NDVI[,1]),], col='blue', pch=16)
+abline(h = 0)
+
+## DHARMa  
+simulationOutput <- simulateResiduals(fittedModel = m_ndvi, plot = T)
+
+## Temporal autocorrelation
+acf(resid)
+
+
+```
+
+
+#### Temperature    
+
+```{r model Temperature, echo=FALSE}
+
+# Mean temperature
+m_Temp <- glmmTMB(cbind(JUV, AD) ~ scaled_Temp[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+family=binomial, data=data_mod_s)
+summary(m_Temp)
+
+# with interaction
+m_Temp <- glmmTMB(cbind(JUV, AD) ~ scaled_aTemp[,1] + scaled_Temp[,1] + scaled_aTemp[,1]:scaled_Temp[,1] + (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+family=binomial, data=data_mod_s)
+summary(m_Temp)
+
+## Temporal autocorrelation
+acf(resid)
+
+```
+
+```{r check model temperature, echo=FALSE}
+
+resid<-residuals(m_Temp, type="pearson")
+
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # no normality
+
+# residuals vs fitted
+plot(resid~fitted(m_Temp)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+# residuals vs scaled Temp
+plot(resid~data_mod_s$scaled_Temp[!is.na(data_mod_s$scaled_Temp[,1]),], col='blue', pch=16)
+abline(h = 0)
+
+## DHARMa  
+simulationOutput <- simulateResiduals(fittedModel = m_Temp, plot = T)
+
+## Temporal autocorrelation
+acf(resid)
+
+
+```
+
+There are always problems with non-linearity, so we will have to use gamm instead of glmm.  
+
+
+### Multivariate models  
+
+```{r model NDVI SPEI, echo=FALSE}
+
+# NDVI + SPEI
+m2 <- glmmTMB(cbind(JUV, AD) ~ scaled_SPEI[,1] + scaled_mBAL[,1] + scaled_SPEI[,1]:scaled_mBAL + 
+                scaled_NDVI[,1] + scaled_aNDVI[,1] + scaled_NDVI[,1]:scaled_aNDVI[,1] + 
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=data_mod_s)
+
+summary(m2)
+
+```
+
+```{r validation SPEI + NDVI, echo=FALSE}
+
+resid<-residuals(m2, type="pearson")
+
+# Histogram
+hist(resid,col='blue',xlab="residuals",main="")
+# Quantile-Quantile plot
+qqnorm(resid,pch=16,col='blue',xlab='')
+qqline(resid,col='red') # no normality
+
+# residuals vs fitted
+plot(resid~fitted(m2)
+      , col='blue'
+      , pch=16)
+abline(h = 0)
+
+## DHARMa  
+simulationOutput <- simulateResiduals(fittedModel = m_Temp, plot = T)
+
+## Temporal autocorrelation
+acf(resid)
+
+
+```
+
+
+ All these models violate the assumption of linearity. So we need to use GAMM to better fit the data.  
+ 
+ 
+ 
+ 
+ 
+################################################################################ 
+ 
+ 
+ 
+## GAMM  
+
+We will use the function *gamm* from the *mgcv* package.  
+
+I start with models without interactions.  
+
+### Univariate models
+
+#### SPEI  
+
+```{r}
+library(mgcv) 
+library(data.table)
+library(tidyverse)
+
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_all_a.csv")
+
+data_mod <- data_mod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG), ESPECE = as.factor(ESPECE))
+
+# # Scale variables  
+# Not needed for univariate models
+# data_mod_s <- data_mod %>% 
+#   mutate(scaled_NDVI = scale(mNDVI)) %>% 
+#   mutate(scaled_SPEI = scale(sumSPEI)) %>% 
+#   mutate(scaled_Temp = scale(myTemp)) %>% 
+#   mutate(scaled_aNDVI = scale(yaNDVI)) %>% 
+#   mutate(scaled_aTemp = scale(yaTemp)) %>% 
+#   mutate(scaled_mBAL = scale(mBAL))
+
+
+mgamm_spei <- gamm(cbind(JUV, AD) ~ s(mSPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod)  
+save(mgamm_spei, file="C:/git/STOC/stats/models/gamm_mspei.rda", compress='xz')
+
+# #Species as fixed effect
+# mgamm_spei <- gamm(cbind(JUV, AD) ~ s(mSPEI) + ESPECE, random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = data_mod)  
+# # This model takes a long time to run, therefore it is saved for later use:
+# save(mgamm_spei, file="C:/git/STOC/stats/models/gamm_mspei_spfixed.rda", compress='xz')
+# # load the model:
+# load("C:/git/STOC/stats/models/gamm_mspei_spfixed.rda")
+# 
+# # Compare using cbind and the proportion we calculated  
+# mgamm_spei <- gamm(Prod ~ s(mSPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_s)  
+
+plot(mgamm_spei$gam,pages=1)
+summary(mgamm_spei$lme) # details of underlying lme fit
+summary(mgamm_spei$gam) # gam style summary of fitted model
+anova(mgamm_spei$gam) 
+gam.check(mgamm_spei$gam) # simple checking plots
+
+```
+
+I cannot use models with the 3 random effects, so after discussing with PY we decided to first run the models without the random effect on species before we find a solution to run the full models.  
+
+```{r mSPEI no species}
+
+mgamm_spei_noSp <- gamm(cbind(JUV, AD) ~ s(mSPEI), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = data_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_spei_noSp, file="C:/git/STOC/stats/models/gamm_mspei_noSp2103.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_mspei_noSp2103.rda")
+
+plot(mgamm_spei_noSp$gam,pages=1)
+summary(mgamm_spei_noSp$lme) # details of underlying lme fit
+summary(mgamm_spei_noSp$gam) # gam style summary of fitted model
+anova(mgamm_spei_noSp$gam) 
+gam.check(mgamm_spei_noSp$gam) # simple checking plots
+
+
+# Compare with other way of writing random effects: 
+mgamm_spei_noSp2 <- gam(cbind(JUV, AD) ~ s(mSPEI) + s(YEAR, bs = "re") + s(ID_PROG, bs = "re"), 
+                         family = binomial, data = data_mod)  
+save(mgamm_spei_noSp2, file="C:/git/STOC/stats/models/gamm_mspei_noSp2.rda", compress='xz')
+
+plot(mgamm_spei_noSp2$gam,pages=1)
+summary(mgamm_spei_noSp2$lme) # details of underlying lme fit
+summary(mgamm_spei_noSp2$gam) # gam style summary of fitted model
+anova(mgamm_spei_noSp2$gam) 
+gam.check(mgamm_spei_noSp2$gam) # simple checking plots
+
+# Random effects written this way can be implemented using the gam function  
+mgam_spei_noSp3 <- gam(cbind(JUV, AD) ~ s(mSPEI) + s(YEAR, bs = "re") + s(ID_PROG, bs = "re"), 
+                         family = binomial, data = data_mod)
+
+```
+
+The 2 ways of writing random effects give 2 completely different results...  
+With *random = list(YEAR = ~1, ID_PROG = ~1)*, mSPEI is not significant. But with *s(YEAR, bs = "re") + s(ID_PROG, bs = "re")*, it is highly significant...  
+
+I will try using scaled variables:  
+```{r}
+
+mgamm_spei_noSp_s <- gamm(cbind(JUV, AD) ~ s(scaled_SPEI[,1]), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = data_mod_s)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_spei_noSp_s, file="C:/git/STOC/stats/models/gamm_mspei_noSp_s.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_mspei_noSp_s.rda")
+
+plot(mgamm_spei_noSp_s$gam,pages=1)
+summary(mgamm_spei_noSp_s$lme) # details of underlying lme fit
+summary(mgamm_spei_noSp_s$gam) # gam style summary of fitted model
+anova(mgamm_spei_noSp_s$gam) 
+gam.check(mgamm_spei_noSp_s$gam) # simple checking plots
+
+
+# Compare with other way of writing random effects: 
+mgamm_spei_noSp2_s <- gamm(cbind(JUV, AD) ~ s(scaled_SPEI[,1]) + s(YEAR, bs = "re") + s(ID_PROG, bs = "re"), 
+                         family = binomial, data = data_mod_s)  
+save(mgamm_spei_noSp2_s, file="C:/git/STOC/stats/models/gamm_mspei_noSp2_s.rda", compress='xz')
+
+plot(mgamm_spei_noSp2_s$gam,pages=1)
+summary(mgamm_spei_noSp2_s$lme) # details of underlying lme fit
+summary(mgamm_spei_noSp2_s$gam) # gam style summary of fitted model
+anova(mgamm_spei_noSp2_s$gam) 
+gam.check(mgamm_spei_noSp2_s$gam) # simple checking plots
+
+```
+
+Scaling variables doesn't change results.  
+
+```{r}
+# Model formulation
+M1 <- gamm(Prod ~ s(mSPEI)
+          + s(myNDVI)
+          + s(myTemp)
+          + s(yaNDVI)
+          + s(yaTemp)
+          + s(mBAL),
+          family = binomial(),
+          data = data_mod)
+
+plot(M1$gam,pages=1)
+summary(M1$lme) # details of underlying lme fit
+summary(M1$gam) # gam style summary of fitted model
+anova(M1$gam) 
+gam.check(M1$gam)
+```
+
+
+We now try with *random effects*  
+
+```{r}
+# Model formulation
+M2 <- gamm(Prod ~ s(mSPEI)
+          + s(myNDVI)
+          + s(myTemp)
+          + s(yaNDVI)
+          + s(yaTemp)
+          + s(mBAL),
+          random = list(ID_PROG = ~1, YEAR = ~1), # we can also write + s(ID_PROG, bs = 're') + s(YEAR, bs = 're')
+          family = binomial(),
+          data = data_mod)
+
+plot(M2$gam,pages=1)
+summary(M2$lme) # details of underlying lme fit
+summary(M2$gam) # gam style summary of fitted model
+anova(M2$gam) 
+gam.check(M2$gam)
+
+# require(itsadug)
+# acf_resid(M2)
+
+# This model takes a long time to run, therefore it is saved for later use:
+# if(F){
+#   m1 <- bam(Y ~ Group 
+#         + s(Time, by=Group) 
+#         + s(Condition, by=Group, k=5) 
+#         + ti(Time, Condition, by=Group)
+#         + s(Time, Subject, bs='fs', m=1)
+#         + s(Trial, Subject, bs='fs', m=1),
+#         data=simdat)
+#   save(m1, file="Models/m1.rda", compress='xz')
+# }
+# # load the model:
+# load('Models//m1.rda')
+```
+
+
+#### NDVI  
+
+```{r gamm NDVI}
+
+mgamm_ndvi_noSp_s <- gamm(cbind(JUV, AD) ~ s(scaled_NDVI[,1]) +  s(scaled_aNDVI[,1]), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = data_mod_s)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_ndvi_noSp_s, file="C:/git/STOC/stats/models/gamm_ndvi_noSp_s.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_ndvi_noSp_s.rda")
+
+plot(mgamm_ndvi_noSp_s$gam,pages=1)
+summary(mgamm_ndvi_noSp_s$lme) # details of underlying lme fit
+summary(mgamm_ndvi_noSp_s$gam) # gam style summary of fitted model
+anova(mgamm_ndvi_noSp_s$gam) 
+gam.check(mgamm_ndvi_noSp_s$gam) # simple checking plots
+
+
+# Compare with other way of writing random effects: 
+# mgamm_ndvi_noSp2_s <- gamm(cbind(JUV, AD) ~ s(scaled_NDVI[,1]) + s(scaled_aNDVI[,1]) + s(YEAR, bs = "re") + s(ID_PROG, bs = "re"), family = binomial, data = data_mod_s)  
+# save(mgamm_ndvi_noSp2_s, file="C:/git/STOC/stats/models/gamm_mndvi_noSp2_s.rda", compress='xz')
+# 
+# plot(mgamm_ndvi_noSp2_s$gam,pages=1)
+# summary(mgamm_ndvi_noSp2_s$lme) # details of underlying lme fit
+# summary(mgamm_ndvi_noSp2_s$gam) # gam style summary of fitted model
+# anova(mgamm_ndvi_noSp2_s$gam) 
+# gam.check(mgamm_ndvi_noSp2_s$gam) # simple checking plots
+
+```
+
+The different ways of writing random effects does not give the same result at all: everything becomes very significant.  
+Pierre-Yves and Romain use the other way of writing it (random = list()), Armelle as well, so I will continue using this one. And by looking further into it I found that usually the (bs= re) is used with *gam* and not *gamm*.  
+
+
+## Temperature  
+
+```{r}
+library(gamm4)
+mgamm_temp <- gamm4(cbind(JUV, AD) ~ s(myTemp), random = ~(1|YEAR) + (1|ID_PROG) + (1|ESPECE), 
+                        family = binomial, data = data_mod)  
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_all_a.csv")
+
+data_mod <- data_mod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG), ESPECE = as.factor(ESPECE))
+
+data_mod2000 <- data_mod %>% filter(YEAR>1999) 
+
+pheno <- fread("C:/git/STOC/Variables/data/pheno.csv")
+data_mod2000_pheno <- data_mod2000 %>% filter(ESPECE %in% pheno$ESPECE)
+
+mgamm_temp <- gamm(cbind(JUV, AD) ~ s(myTemp), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = data_mod2000_pheno)  
+save(mgamm_temp, file="C:/git/STOC/stats/models/gamm_temp.rda", compress='xz')
+
+plot(mgamm_temp$gam,pages=1)
+summary(mgamm_temp$lme) # details of underlying lme fit
+summary(mgamm_temp$gam) # gam style summary of fitted model
+anova(mgamm_temp$gam) 
+gam.check(mgamm_temp$gam) # simple checking plots
+
+
+
+mgamm_temp_noSp <- gamm(cbind(JUV, AD) ~ s(myTemp) + s(mdaTemp), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = data_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_temp_noSp, file="C:/git/STOC/stats/models/gamm_temp_noSp2703.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_temp_noSp2703.rda")
+
+plot(mgamm_temp_noSp$gam,pages=1)
+summary(mgamm_temp_noSp$lme) # details of underlying lme fit
+summary(mgamm_temp_noSp$gam) # gam style summary of fitted model
+anova(mgamm_temp_noSp$gam) 
+gam.check(mgamm_temp_noSp$gam) # simple checking plots
+
+```
+
+It looks like there is a thermal optimum: in cold sites, an increasing temperature has a positive effect, whereas in warm sites, it has a negative effect.  
+So I will now test linear trends for 3 categories of sites: the 25% coldest, medium, 25% warmest.  
+
+In the end we chose not to do this, but to use 2 categories based on our data. We could see a threshold at 13°C, so I will define cold sites those whose mean spring temperature < 13°C and warm sites if myT > 13°C.  
+
+
+```{r temperature categories}
+
+# load data  
+data_mod <- fread("C:/git/STOC/Variables/data/model/data_model_all_a.csv")
+
+data_mod <- data_mod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG), ESPECE = as.factor(ESPECE))
+
+# create 2 groups  
+catT <- data_mod %>% 
+  mutate(cat = ifelse(myTemp < 13, "Cold", "Warm")) 
+
+cold_site <- catT %>% 
+  select(ID_PROG, cat) %>% 
+  filter(cat == "Cold") %>% 
+  distinct()
+warm_site <- catT %>% 
+  select(ID_PROG, cat) %>% 
+  filter(cat == "Warm") %>% 
+  distinct()
+
+intersect(cold_site$ID_PROG, warm_site$ID_PROG)
+# Some sites are in both cold and warm sites because of interannual variability  
+# So I need to consider the overall mean  
+daily_anomalies <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+
+# create 2 groups  
+catT <- daily_anomalies %>% 
+  filter(d > 59 & d < 196) %>% # from 01/03 to 15/07
+  group_by(ID_PROG) %>% 
+  summarise(site_T = mean(T_Q)) %>% 
+  mutate(cat = as.factor(ifelse(site_T < 13, "Cold", "Warm"))) 
+summary(catT)
+# 210 cold sites, 179 warm
+# median = 12.83
+# mean = 12.88
+
+# save file
+# write.csv(catT, file = "C:/git/STOC/Variables/data/temp_cat_sites.csv", row.names = FALSE)
+
+catT <- data_mod %>% 
+  select(ID_PROG:MIGRATION, myTemp, mdaTemp) %>% 
+  group_by(ID_PROG) %>% 
+  summarize(meanT = mean(myTemp)) %>% 
+  mutate(Tcat = ifelse(meanT < quantile(var$SPEI, probs = 0.25, na.rm = TRUE), "cold", ifelse())) %>% 
+  
+
+data_mod_Tsites
+  mutate(Tcat = )
+```
+
+## Temperature anomalies
+
+```{r}
+
+mgamm_atemp <- gamm(cbind(JUV, AD) ~ s(mdaTemp), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = data_mod2000_pheno)  
+save(mgamm_atemp, file="C:/git/STOC/stats/models/gamm_atemp.rda", compress='xz')
+
+plot(mgamm_atemp$gam,pages=1)
+summary(mgamm_atemp$lme) # details of underlying lme fit
+summary(mgamm_atemp$gam) # gam style summary of fitted model
+anova(mgamm_atemp$gam) 
+gam.check(mgamm_atemp$gam) # simple checking plots
+
+
+```
+
+## SPEI spring  
+I want to try the model using the SPEI computed over 4 month from 15/03 to 15/07 
+
+```{r}
+spring_spei <- fread("C:/git/STOC/Variables/data/spei_month4.csv")  
+data_mod_s_spei <- spring_spei %>% 
+ mutate(ID_PROG = as_factor(ID_PROG)) %>% 
+ rename(YEAR = Year) %>% 
+ right_join(data_mod[,1:6])
+
+mgamm_spring_spei_noSp <- gamm(cbind(JUV, AD) ~ s(SPEI), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = data_mod_s_spei)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_spring_spei_noSp, file="C:/git/STOC/stats/models/gamm_spring_spei_noSp2103.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_mspei_noSp2103.rda")
+
+plot(mgamm_spring_spei_noSp$gam,pages=1)
+summary(mgamm_spring_spei_noSp$lme) # details of underlying lme fit
+summary(mgamm_spring_spei_noSp$gam) # gam style summary of fitted model
+anova(mgamm_spring_spei_noSp$gam) 
+gam.check(mgamm_spring_spei_noSp$gam) # simple checking plots
+
+```
+
+### NDVI  
+
+```{r}
+data_mod_ <- fread("C:/git/STOC/Variables/data/model/data_model_a2703.csv")
+
+mgamm_ndvi_noSp <- gamm(cbind(JUV, AD) ~ s(myNDVI) + s(mdaNDVI), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = data_mod_)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_ndvi_noSp, file="C:/git/STOC/stats/models/gamm_ndvi_noSp2703.rda", compress='xz')
+# load the model:
+load("C:/git/STOC/stats/models/gamm_ndvi_noSp2703.rda")
+
+plot(mgamm_ndvi_noSp$gam,pages=1)
+summary(mgamm_ndvi_noSp$lme) # details of underlying lme fit
+summary(mgamm_ndvi_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_ndvi_noSp$gam) 
+gam.check(mgamm_ndvi_noSp$gam) # simple checking plots
+
+```
+
+
+## ggpredict  
+
+Now that I have explored the relationships of the environmental variables with productivity, I will check how good would be the use of simplified functions (linear or quadratic) to approximate these relationships.  
+
+### SPEI  
+_Early SPEI_  
+
+```{r ggpredict SPEI}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/mgamm_early_spei.rda")
+
+# plot
+ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> 
+  plot()
+# get values
+df_early_spei <- ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> as.data.frame()  
+
+## Quadratic  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/var_model_final.csv")
+
+# Add quadratic terms
+# SPEI early + late,  temperature anomalies late
+var_model <- var_model %>% 
+  mutate(SPEI_early2 = meanSPEI_early * meanSPEI_early) %>% 
+  mutate(SPEI_late2 = meanSPEI_late * meanSPEI_late) %>% 
+  mutate(aT_late2 = mean_aT_late * mean_aT_late)
+
+mod_early_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_early + I(meanSPEI_early^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+
+# plot
+ggpredict(mod_early_spei2, 
+          terms = c("meanSPEI_early [all]")) |> 
+  plot()
+
+# get values
+df_early_spei_2 <- ggpredict(mod_early_spei2, 
+          terms = "meanSPEI_early [all]") |> as.data.frame()  
+
+```
+
+The quadratic estimate is very far from the smooth term...
+
+
+_Late SPEI_  
+
+```{r}
+
+##  GAMM
+load("C:/git/STOC/stats/models/mgamm_late_spei.rda")
+
+# plot
+ggpredict(mgamm_late_spei, 
+          terms = "meanSPEI_late") |> 
+  plot()
+# get values
+df_late_spei <- ggpredict(mgamm_late_spei, 
+          terms = "meanSPEI_late") |> as.data.frame()  
+
+## Quadratic  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/var_model_final.csv")
+
+mod_late_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_late + I(meanSPEI_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+
+# plot
+ggpredict(mod_late_spei2, 
+          terms = c("meanSPEI_late [all]")) |> 
+  plot()
+
+# get values
+df_late_spei_2 <- ggpredict(mod_late_spei2, 
+          terms = "meanSPEI_late [all]") |> as.data.frame()  
+
+```
+
+Same, the quadratic term predicts opposite trends compared to the GAMM...  
+
+### Water balance  
+```{r ggpredict BAL}  
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/mgamm_early_spei.rda") # mean daily SPEI
+load("C:/git/STOC/stats/models/gamm_early_spei.rda") # monthly SPEI computed over 2 months
+
+# plot
+# mean daily SPEI
+ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> 
+  plot()
+# monthly SPEI computed over 2 months
+ggpredict(gamm_early_spei, 
+          terms = "early_SPEI") |> 
+  plot()
+
+# get values
+df_early_spei <- ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> as.data.frame()  
+
+## Quadratic  
+# data 
+# mean daily SPEI
+var_model <- fread("C:/git/STOC/Variables/data/model/data_model_periods.csv")
+# monthly SPEI  
+var_model <- fread("C:/git/STOC/Variables/data/model/df_model_final.csv")
+
+mod_early_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_early + I(meanSPEI_early^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+
+# plot
+ggpredict(mod_early_spei2, 
+          terms = c("meanSPEI_early [all]")) |> 
+  plot()
+
+# get values
+df_early_spei_2 <- ggpredict(mod_early_spei2, 
+          terms = "meanSPEI_early [all]") |> as.data.frame()  
+
+
+## Linear  
+mod_early_spei_lin <- glmmTMB(cbind(JUV, AD) ~ early_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+summary(mod_early_spei_lin)
+
+# plot
+ggpredict(mod_early_spei_lin, 
+          terms = c("early_SPEI [all]")) |> 
+  plot()
+
+# get values
+df_early_spei_lin <- ggpredict(mod_early_spei_lin, 
+          terms = "early_SPEI [all]") |> as.data.frame()  
+
+```
+
+
+### Temperature

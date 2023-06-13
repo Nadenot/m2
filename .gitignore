@@ -16,3 +16,5 @@ Variables/data/model/data_model_a2703.csv
 Variables/NDVI.html
 Variables/NDVI.html
 *.csv
+*.nex
+*.tre

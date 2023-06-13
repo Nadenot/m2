@@ -1,0 +1,795 @@
+---
+title: "Models"
+author: "Nathalie Adenot"
+date: "2023-03-01"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r packages, echo=FALSE}
+require(tidyverse)
+require(glmmTMB)
+require(data.table)
+require(DHARMa)
+library(mgcv)
+
+#libraries for spatial series analyses
+library(spdep) #to extracted the neighbors is a spatial data
+library(ade4)  #used for plotting spatial data
+library(spatialreg) #used for spatial data modelling
+library(gwrr)  #to run geographically weighted regression
+
+```
+
+ 
+ 
+# GAMM  
+
+We will use the function *gamm* from the *mgcv* package.  
+
+I start with univariate models without interactions to explore the linearity of relationships between environmental variables and productivity.  
+
+
+_Load data_  
+For the final model, we decided to keep mean spring variables for Temperature, water balance and NDVI.  
+And early / late variables for anomalies: SPEI, temperature anomalies, NDVI anomalies  
+
+```{r data}
+data_mod <- fread("C:/git/STOC/Variables/data/model/df_model_final_ECE.csv")
+
+data_mod <- data_mod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>% 
+  # mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(ESPECE = as.factor(ESPECE))
+```
+
+_subset dataset_  
+As is requires a lot of RAM to run these GAMM with 3 random effects, I need to subset the dataset.  
+I will keep only the 50 most captured species, and data from 2000.  
+It shouldn't bias the results and we still have quite a lot of data.  
+
+```{r subset data}
+
+# list of species  
+pheno <- fread("C:/git/STOC/Variables/data/pheno.csv")
+species <- unique(pheno$ESPECE)
+
+# subset data_mod  
+data_mod_50sp <- data_mod %>% 
+  filter(ESPECE %in% species) %>% # keep 50 species
+  filter(YEAR > 2000) # keep data from 2000
+
+
+```
+
+## SPEI  
+
+### early SPEI
+```{r early SPEI}
+
+gamm_early_spei <- gamm(cbind(JUV, AD) ~ s(early_SPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_early_spei, file="C:/git/STOC/stats/models/gamm_early_spei.rda", compress='xz')
+load("C:/Users/Nathalie Adenot/STOC/cluster/output/gamm_early_spei.rda")
+
+plot(gamm_early_spei$gam,pages=1)
+summary(gamm_early_spei$lme) # details of underlying lme fit
+summary(gamm_early_spei$gam) # gam style summary of fitted model
+anova(gamm_early_spei$gam) 
+gam.check(gamm_early_spei$gam) # simple checking plots
+
+```
+
+### late SPEI  
+
+```{r late SPEI}
+
+gamm_late_spei <- gamm(cbind(JUV, AD) ~ s(late_SPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_late_spei, file="C:/git/STOC/stats/models/gamm_late_spei.rda", compress='xz')
+
+plot(gamm_late_spei$gam,pages=1)
+summary(gamm_late_spei$lme) # details of underlying lme fit
+summary(gamm_late_spei$gam) # gam style summary of fitted model
+anova(gamm_late_spei$gam) 
+gam.check(gamm_late_spei$gam) # simple checking plots
+
+```
+
+## Water balance (BAL)  
+
+```{r BAL}
+gamm_BAL <- gamm(cbind(JUV, AD) ~ s(mean_BAL), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_BAL, file="C:/git/STOC/stats/models/gamm_BAL.rda", compress='xz')
+
+plot(gamm_BAL$gam,pages=1)
+summary(gamm_BAL$lme) # details of underlying lme fit
+summary(gamm_BAL$gam) # gam style summary of fitted model
+anova(gamm_BAL$gam) 
+gam.check(gamm_BAL$gam) # simple checking plots
+
+```
+
+
+## NDVI  
+
+As there are NAs in the data, we are able to run the GAMM on the complete dataset.  
+
+### Mean NDVI  
+
+```{r mean NDVI}
+
+gamm_NDVI <- gamm(cbind(JUV, AD) ~ s(mean_NDVI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod) 
+
+save(gamm_NDVI, file="C:/git/STOC/stats/models/gamm_NDVI.rda", compress='xz')
+
+plot(gamm_NDVI$gam,pages=1)
+summary(gamm_NDVI$lme) # details of underlying lme fit
+summary(gamm_NDVI$gam) # gam style summary of fitted model
+anova(gamm_NDVI$gam) 
+gam.check(gamm_NDVI$gam) # simple checking plots
+
+```
+
+### NDVI anomalies  
+
+_Early breeding season_  
+
+```{r early NDVI anomalies}
+
+gamm_early_aNDVI <- gamm(cbind(JUV, AD) ~ s(mean_aNDVI_early), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod) 
+
+save(gamm_early_aNDVI, file="C:/git/STOC/stats/models/gamm_early_aNDVI.rda", compress='xz')
+
+plot(gamm_early_aNDVI$gam,pages=1)
+summary(gamm_early_aNDVI$lme) # details of underlying lme fit
+summary(gamm_early_aNDVI$gam) # gam style summary of fitted model
+anova(gamm_early_aNDVI$gam) 
+gam.check(gamm_early_aNDVI$gam) # simple checking plots
+
+```
+
+
+_Late breeding season_  
+
+```{r late NDVI anomalies}
+
+gamm_late_aNDVI <- gamm(cbind(JUV, AD) ~ s(mean_aNDVI_late), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod) 
+
+save(gamm_late_aNDVI, file="C:/git/STOC/stats/models/gamm_late_aNDVI.rda", compress='xz')
+
+plot(gamm_late_aNDVI$gam,pages=1)
+summary(gamm_late_aNDVI$lme) # details of underlying lme fit
+summary(gamm_late_aNDVI$gam) # gam style summary of fitted model
+anova(gamm_late_aNDVI$gam) 
+gam.check(gamm_late_aNDVI$gam) # simple checking plots
+
+```
+
+
+
+## Temperature  
+
+### Mean temperature  
+
+```{r mean temperature}
+
+gamm_T <- gamm(cbind(JUV, AD) ~ s(mean_T), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_T, file="C:/git/STOC/stats/models/gamm_T.rda", compress='xz')
+
+plot(gamm_T$gam,pages=1)
+summary(gamm_T$lme) # details of underlying lme fit
+summary(gamm_T$gam) # gam style summary of fitted model
+anova(gamm_T$gam) 
+gam.check(gamm_T$gam) # simple checking plots
+
+```
+
+### Temperature anomalies  
+
+_Early breeding season_  
+
+```{r early Temperature anomalies}
+
+gamm_early_aT <- gamm(cbind(JUV, AD) ~ s(mean_aT_early), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_early_aT, file="C:/git/STOC/stats/models/gamm_early_aT.rda", compress='xz')
+
+plot(gamm_early_aT$gam,pages=1)
+summary(gamm_early_aT$lme) # details of underlying lme fit
+summary(gamm_early_aT$gam) # gam style summary of fitted model
+anova(gamm_early_aT$gam) 
+gam.check(gamm_early_aT$gam) # simple checking plots
+
+```
+
+_Late breeding season_  
+
+```{r late Temperature anomalies}
+
+gamm_late_aT <- gamm(cbind(JUV, AD) ~ s(mean_aT_late), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_late_aT, file="C:/git/STOC/stats/models/gamm_late_aT.rda", compress='xz')
+
+plot(gamm_late_aT$gam,pages=1)
+summary(gamm_late_aT$lme) # details of underlying lme fit
+summary(gamm_late_aT$gam) # gam style summary of fitted model
+anova(gamm_late_aT$gam) 
+gam.check(gamm_late_aT$gam) # simple checking plots
+
+```
+
+
+## ECE  
+
+For SPEI and Temperature, I defined several variables to characterise ECE (Extreme Climatic Events):  
+- *ECE_spei* & *ECE_temp*: binary variables (true/false), stating whether a year is extreme or not  
+- *nb_ECE_SPEI* & *nb_ECE_aTemp*: continuous variable, giving the number of ECE days per year  
+- *ECE3temp* & *ECE3SPEI*: continuous variables, giving the number of times per year there were more than 3 consecutive ECE days  
+
+
+_ECE SPEI_    
+
+```{r ECE SPEI}
+
+gamm_ECE_spei <- gamm(cbind(JUV, AD) ~ s(ECE_spei), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_ECE_spei, file="C:/git/STOC/stats/models/gamm_ECE_spei.rda", compress='xz')
+
+plot(gamm_ECE_spei$gam,pages=1)
+summary(gamm_ECE_spei$lme) # details of underlying lme fit
+summary(gamm_ECE_spei$gam) # gam style summary of fitted model
+anova(gamm_ECE_spei$gam) 
+gam.check(gamm_ECE_spei$gam) # simple checking plots
+
+```
+
+_ECE temperature_    
+
+```{r ECE temperature}
+
+gamm_ECE_temp <- gamm(cbind(JUV, AD) ~ s(ECE_temp), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_ECE_temp, file="C:/git/STOC/stats/models/gamm_ECE_temp.rda", compress='xz')
+
+plot(gamm_ECE_temp$gam,pages=1)
+summary(gamm_ECE_temp$lme) # details of underlying lme fit
+summary(gamm_ECE_temp$gam) # gam style summary of fitted model
+anova(gamm_ECE_temp$gam) 
+gam.check(gamm_ECE_temp$gam) # simple checking plots
+
+```
+
+
+_nb ECE SPEI_    
+
+```{r nb ECE SPEI}
+
+gamm_nb_ECE_spei <- gamm(cbind(JUV, AD) ~ s(nb_ECE_SPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_nb_ECE_spei, file="C:/git/STOC/stats/models/gamm_nb_ECE_SPEI.rda", compress='xz')
+
+plot(gamm_nb_ECE_spei$gam,pages=1)
+summary(gamm_nb_ECE_spei$lme) # details of underlying lme fit
+summary(gamm_nb_ECE_spei$gam) # gam style summary of fitted model
+anova(gamm_nb_ECE_spei$gam) 
+gam.check(gamm_nb_ECE_spei$gam) # simple checking plots
+
+```
+
+_nb ECE temperature_    
+
+```{r nb ECE aTemp}
+
+gamm_nb_ECE_aTemp <- gamm(cbind(JUV, AD) ~ s(nb_ECE_aTemp), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_nb_ECE_aTemp, file="C:/git/STOC/stats/models/gamm_nb_ECE_aTemp.rda", compress='xz')
+
+plot(gamm_nb_ECE_aTemp$gam,pages=1)
+summary(gamm_nb_ECE_aTemp$lme) # details of underlying lme fit
+summary(gamm_nb_ECE_aTemp$gam) # gam style summary of fitted model
+anova(gamm_nb_ECE_aTemp$gam) 
+gam.check(gamm_nb_ECE_aTemp$gam) # simple checking plots
+
+```
+
+
+_nb 3 ECE SPEI_  
+
+```{r nb 3 ECE cons SPEI}
+
+gamm_nb_ECE3SPEI <- gamm(cbind(JUV, AD) ~ s(ECE3SPEI), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_nb_ECE3SPEI, file="C:/git/STOC/stats/models/gamm_nb_ECE3SPEI.rda", compress='xz')
+
+plot(gamm_nb_ECE3SPEI$gam,pages=1)
+summary(gamm_nb_ECE3SPEI$lme) # details of underlying lme fit
+summary(gamm_nb_ECE3SPEI$gam) # gam style summary of fitted model
+anova(gamm_nb_ECE3SPEI$gam) 
+gam.check(gamm_nb_ECE3SPEI$gam) # simple checking plots
+
+```
+
+_nb 3 ECE temp_  
+
+```{r nb 3 ECE cons temperature}
+
+gamm_nb_ECE3temp <- gamm(cbind(JUV, AD) ~ s(ECE3temp), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), family = binomial, data = data_mod_50sp) 
+
+save(gamm_nb_ECE3temp, file="C:/git/STOC/stats/models/gamm_nb_ECE3temp.rda", compress='xz')
+
+plot(gamm_nb_ECE3temp$gam,pages=1)
+summary(gamm_nb_ECE3temp$lme) # details of underlying lme fit
+summary(gamm_nb_ECE3temp$gam) # gam style summary of fitted model
+anova(gamm_nb_ECE3temp$gam) 
+gam.check(gamm_nb_ECE3temp$gam) # simple checking plots
+
+```
+
+
+
+
+
+
+## ggpredict  
+
+Now that I have explored the relationships of the environmental variables with productivity, I will check how good would be the use of simplified functions (linear or quadratic) to approximate these relationships.  
+
+### SPEI  
+_Early SPEI_  
+
+```{r ggpredict SPEI}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/mgamm_early_spei.rda") # mean daily SPEI
+load("C:/git/STOC/stats/models/gamm_early_spei.rda") # monthly SPEI computed over 2 months
+
+# plot
+# mean daily SPEI
+ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> 
+  plot()
+# monthly SPEI computed over 2 months
+ggpredict(gamm_early_spei, 
+          terms = "early_SPEI") |> 
+  plot()
+
+# get values
+df_early_spei <- ggpredict(mgamm_early_spei, 
+          terms = "meanSPEI_early") |> as.data.frame()  
+
+## Quadratic  
+# data 
+# mean daily SPEI
+var_model <- fread("C:/git/STOC/Variables/data/model/data_model_periods.csv")
+# monthly SPEI  
+var_model <- fread("C:/git/STOC/Variables/data/model/df_model_final.csv")
+
+mod_early_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_early + I(meanSPEI_early^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+# plot
+ggpredict(mod_early_spei2, 
+          terms = c("meanSPEI_early")) |> 
+  plot()
+# get values
+df_early_spei_2 <- ggpredict(mod_early_spei2, 
+          terms = "meanSPEI_early [all]") |> as.data.frame()  
+
+
+## Linear  
+mod_early_spei_lin <- glmmTMB(cbind(JUV, AD) ~ early_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+summary(mod_early_spei_lin)
+# plot
+ggpredict(mod_early_spei_lin, 
+          terms = c("early_SPEI [all]")) |> 
+  plot()
+# get values
+df_early_spei_lin <- ggpredict(mod_early_spei_lin, 
+          terms = "early_SPEI [all]") |> as.data.frame()  
+
+```
+
+The quadratic estimate is very far from the smooth term...
+
+
+_Late SPEI_  
+
+```{r}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/mgamm_late_spei.rda") # mean daily SPEI
+load("C:/git/STOC/stats/models/gamm_late_spei.rda") # monthly SPEI computed over 2 months
+
+# plot
+# mean daily SPEI
+ggpredict(mgamm_late_spei, 
+          terms = "meanSPEI_late") |> 
+  plot()
+# monthly SPEI computed over 2 months
+ggpredict(gamm_late_spei, 
+          terms = "late_SPEI") |> 
+  plot()
+
+# get values
+df_late_spei <- ggpredict(mgamm_late_spei, 
+          terms = "meanSPEI_late") |> as.data.frame()  
+
+## Quadratic  
+# data 
+# mean daily SPEI
+var_model <- fread("C:/git/STOC/Variables/data/model/data_model_periods.csv")
+# monthly SPEI  
+var_model <- fread("C:/git/STOC/Variables/data/model/df_model_final.csv")
+
+mod_late_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_late + I(meanSPEI_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+# plot
+ggpredict(mod_late_spei2, 
+          terms = c("meanSPEI_late [all]")) |> 
+  plot()
+# get values
+df_late_spei_2 <- ggpredict(mod_late_spei2, 
+          terms = "meanSPEI_late [all]") |> as.data.frame()  
+
+
+## Linear  
+mod_late_spei_lin <- glmmTMB(cbind(JUV, AD) ~ late_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+summary(mod_late_spei_lin)
+# plot
+ggpredict(mod_late_spei_lin, 
+          terms = c("late_SPEI [all]")) |> 
+  plot()
+# get values
+df_late_spei_lin <- ggpredict(mod_late_spei_lin, 
+          terms = "late_SPEI [all]") |> as.data.frame()  
+
+```
+
+Same, the quadratic term predicts opposite trends compared to the GAMM...  
+
+### Water balance  
+```{r ggpredict BAL}  
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_BAL.rda")
+
+# plot
+ggpredict(gamm_BAL, 
+          terms = "mean_BAL") |> 
+  plot()
+# get values
+df_BAL_spei <- ggpredict(mgamm_BAL_spei, 
+          terms = "mean_BAL") |> as.data.frame()  
+
+## Quadratic  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+# Add quadratic terms
+# SPEI early + late,  temperature anomalies late
+var_model <- var_model %>% 
+  mutate(SPEI_early2 = meanSPEI_early * meanSPEI_early) %>% 
+  mutate(SPEI_late2 = meanSPEI_late * meanSPEI_late) %>% 
+  mutate(aT_late2 = mean_aT_late * mean_aT_late)
+
+mod_early_spei2 <- glmmTMB(cbind(JUV, AD) ~ meanSPEI_early + I(meanSPEI_early^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+
+# plot
+ggpredict(mod_early_spei2, 
+          terms = c("meanSPEI_early [all]")) |> 
+  plot()
+
+# get values
+df_early_spei_2 <- ggpredict(mod_early_spei2, 
+          terms = "meanSPEI_early [all]") |> as.data.frame()  
+
+
+```
+
+
+### Temperature
+
+```{r ggpredict temp continuous}
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_T.rda")
+
+# plot
+ggpredict(gamm_T, 
+          terms = "mean_T") |> 
+  plot()
+# get values
+df_T <- ggpredict(gamm_T, 
+          terms = "mean_T") |> as.data.frame()  
+
+
+## Quadratic  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_T2 <- glmmTMB(cbind(JUV, AD) ~ mean_T + I(mean_T^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_T2, 
+          terms = c("mean_T [all]")) |> 
+  plot()
+
+# get values
+df_T2 <- ggpredict(mod_T2, 
+          terms = "mean_T [all]") |> as.data.frame()  
+
+```
+
+### Temperature anomalies  
+
+_Early temperature anomalies_  
+
+```{r}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_early_aT.rda")
+
+# plot
+ggpredict(gamm_aT_early, 
+          terms = "mean_aT_early") |> 
+  plot()
+# get values
+df_early_aT <- ggpredict(gamm_early_aT, 
+          terms = "mean_aT_early") |> as.data.frame()  
+
+
+## Linear  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_early_aT_lin <- glmmTMB(cbind(JUV, AD) ~ mean_aT_early +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_early_aT_lin, 
+          terms = c("mean_aT_early [all]")) |> 
+  plot()
+
+# get values
+df_early_aT_lin <- ggpredict(mod_early_aT_lin, 
+          terms = "mean_aT_early [all]") |> as.data.frame()  
+
+```
+
+_Late temperature anomalies_  
+
+```{r}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_late_aT.rda")
+
+# plot
+ggpredict(gamm_aT_late, 
+          terms = "mean_aT_late") |> 
+  plot()
+# get values
+df_late_aT <- ggpredict(gamm_late_aT, 
+          terms = "mean_aT_late") |> as.data.frame()  
+
+
+## Linear  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_late_aT_lin <- glmmTMB(cbind(JUV, AD) ~ mean_aT_late +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_late_aT_lin, 
+          terms = c("mean_aT_late [all]")) |> 
+  plot()
+
+# get values
+df_late_aT_lin <- ggpredict(mod_late_aT_lin, 
+          terms = "mean_aT_late [all]") |> as.data.frame()  
+
+
+## Quadratic 
+mod_late_aT2 <- glmmTMB(cbind(JUV, AD) ~ mean_aT_late + I(mean_aT_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_late_aT2, 
+          terms = c("mean_aT_late [all]")) |> 
+  plot()
+
+# get values
+df_late_aT2 <- ggpredict(mod_late_aT2, 
+          terms = "mean_aT_late [all]") |> as.data.frame()  
+
+
+```
+
+
+
+### NDVI
+
+```{r ggpredict NDVI}
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_NDVI.rda")
+
+# plot
+ggpredict(gamm_NDVI, 
+          terms = "meanNDVI") |> 
+  plot()
+# get values
+df_NDVI <- ggpredict(gamm_NDVI, 
+          terms = "meanNDVI") |> as.data.frame()  
+
+
+## Quadratic  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_NDVI2 <- glmmTMB(cbind(JUV, AD) ~ meanNDVI + I(meanNDVI^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_NDVI2, 
+          terms = c("meanNDVI [all]")) |> 
+  plot()
+
+# get values
+df_NDVI2 <- ggpredict(mod_NDVI2, 
+          terms = "meanNDVI [all]") |> as.data.frame()  
+
+## Linear  
+mod_NDVI_lin <- glmmTMB(cbind(JUV, AD) ~ meanNDVI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+# plot
+ggpredict(mod_NDVI_lin, 
+          terms = c("meanNDVI [all]")) |> 
+  plot()
+# get values
+df_NDVI_lin <- ggpredict(mod_NDVI_lin, 
+          terms = "meanNDVI [all]") |> as.data.frame()  
+
+```
+
+### NDVI anomalies  
+
+_Early NDVI anomalies_  
+
+```{r}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_early_aNDVI.rda")
+
+# plot
+ggpredict(gamm_aNDVI_early, 
+          terms = "mean_aNDVI_early") |> 
+  plot()
+# get values
+df_early_aNDVI <- ggpredict(gamm_early_aNDVI, 
+          terms = "mean_aNDVI_early") |> as.data.frame()  
+
+
+## Linear  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_early_aNDVI_lin <- glmmTMB(cbind(JUV, AD) ~ mean_aNDVI_early +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_early_aNDVI_lin, 
+          terms = c("mean_aNDVI_early [all]")) |> 
+  plot()
+
+# get values
+df_early_aNDVI_lin <- ggpredict(mod_early_aNDVI_lin, 
+          terms = "mean_aNDVI_early [all]") |> as.data.frame()  
+
+## Quadratic 
+mod_early_aNDVI2 <- glmmTMB(cbind(JUV, AD) ~ mean_aNDVI_early + I(mean_aNDVI_early^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+# plot
+ggpredict(mod_early_aNDVI2, 
+          terms = c("mean_aNDVI_early [all]")) |> 
+  plot()
+# get values
+df_early_aNDVI2 <- ggpredict(mod_early_aNDVI2, 
+          terms = "mean_aNDVI_early [all]") |> as.data.frame()  
+
+
+```
+
+_Late temperature anomalies_  
+
+```{r}
+require(ggeffects)
+require(glmmTMB)
+require(lme4)
+
+##  GAMM
+load("C:/git/STOC/stats/models/gamm_late_aNDVI.rda")
+
+# plot
+ggpredict(gamm_aNDVI_late, 
+          terms = "mean_aNDVI_late") |> 
+  plot()
+# get values
+df_late_aNDVI <- ggpredict(gamm_late_aNDVI, 
+          terms = "mean_aNDVI_late") |> as.data.frame()  
+
+
+## Linear  
+# data 
+var_model <- fread("C:/git/STOC/Variables/data/model/data_mod_50sp.csv")
+
+mod_late_aNDVI_lin <- glmmTMB(cbind(JUV, AD) ~ mean_aNDVI_late +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+
+# plot
+ggpredict(mod_late_aNDVI_lin, 
+          terms = c("mean_aNDVI_late [all]")) |> 
+  plot()
+
+# get values
+df_late_aNDVI_lin <- ggpredict(mod_late_aNDVI_lin, 
+          terms = "mean_aNDVI_late [all]") |> as.data.frame()  
+
+
+## Quadratic 
+mod_late_aNDVI2 <- glmmTMB(cbind(JUV, AD) ~ mean_aNDVI_late + I(mean_aNDVI_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model)
+# plot
+ggpredict(mod_late_aNDVI2, 
+          terms = c("mean_aNDVI_late [all]")) |> 
+  plot()
+# get values
+df_late_aNDVI2 <- ggpredict(mod_late_aNDVI2, 
+          terms = "mean_aNDVI_late [all]") |> as.data.frame()  
+
+
+```
+

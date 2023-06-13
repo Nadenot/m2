@@ -1,0 +1,537 @@
+---
+title: "ClimWin"
+author: "Nathalie Adenot"
+date: "2023-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+## Import data  
+
+```{r}
+library(lubridate)
+library(tidyverse)
+library(data.table)
+
+# Biological data 
+prod <- read.csv("C:/git/STOC/Variables/data/model/Prod.csv")
+# Add date column: set by default at 01/07 (format dd/mm/yyyy)
+# we set the date at the end of the period we want to consider, at the end of the reproduction period
+prod <- prod %>% 
+  mutate(ID_PROG = as.factor(ID_PROG), ESPECE = as.factor(ESPECE)) %>% 
+  mutate(Date = as.factor(paste("01/07",YEAR, sep = "/")))
+
+## We load data separately because climwin expect daily values, so we don't use the same dataset as in the model
+# SPEI 
+SPEI <- fread("C:/git/STOC/Variables/data/spei_day1.csv")
+SPEI <- SPEI %>% 
+  pivot_longer(cols = 2:407, names_to = "ID_PROG", values_to = "SPEI") %>% 
+  mutate(YEAR = year(Date)) %>% 
+  mutate(Date2 = as.factor(paste(ifelse(day(Date) <10, paste0(0, day(Date)), day(Date)), ifelse(month(Date) < 10, paste0(0, month(Date)), month(Date)), year(Date), sep = "/"))) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) 
+#replace Inf values by value from the previous day
+SPEI$SPEI[is.infinite(SPEI$SPEI)] <- NA 
+library(zoo)
+SPEI <- SPEI %>% 
+  arrange(ID_PROG) %>% 
+  na.locf()
+
+
+# NDVI 
+NDVI <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+NDVI <- NDVI %>% 
+  mutate(Date2 = as.factor(paste(ifelse(day(Date) <10, paste0(0, day(Date)), day(Date)), ifelse(month(Date) < 10, paste0(0, month(Date)), month(Date)), year(Date), sep = "/"))) %>% 
+  mutate(ID = as.factor(ID)) 
+# Environmental variables are expected to be daily values !!!!  TO FINISH  !!!!
+NDVI_day <- NDVI %>%
+  # select(ID:NDVI, Date2) %>% 
+  rename(ID_PROG = ID, YEAR = Year) %>% 
+  right_join(SPEI[,c(1,2,4)]) %>% 
+  mutate(Year_ID = paste(YEAR, ID_PROG, sep = "_")) %>% 
+  group_by(ID_PROG) %>% 
+  arrange(Date, by_group = TRUE) %>% 
+  filter(yday(Date) > 59 & yday(Date) < 196)
+id <- NDVI$Year_ID
+NDVI_day <- NDVI_day %>% filter(Year_ID %in% id) # Je comprends pas pourquoi ça marche qu'en le faisant en 2 fois
+# complete NDVI values (replace NAs by the next value)
+library(zoo)
+NDVI_day <- NDVI_day %>% 
+  arrange(ID_PROG) %>% 
+  na.locf(na.rm = TRUE, fromLast = TRUE) # on finit le 13 juillet au lieu du 15
+# write.csv(NDVI_day, "C:/git/STOC/Variables/data/NDVI_day_climwin", row.names = FALSE)
+
+
+# Temperature  
+Temp <- fread("C:/git/STOC/Variables/data/meteo_all_year.csv")
+Temp <- Temp %>% 
+  filter(mo > 2 & mo < 8) %>%
+  select(DATE2, an, T_Q, ID_PROG) %>%
+  mutate(Date = as.factor(paste(ifelse(day(DATE2) <10, paste0(0, day(DATE2)), day(DATE2)), ifelse(month(DATE2) < 10, paste0(0, month(DATE2)), month(DATE2)), year(DATE2), sep = "/"))) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG))
+
+
+```
+
+## Test climwin for short distance migrants 
+
+As Climwin takes a long time to run, I will first try to run it using a subset of data: here I test with great tit and blue tit for Pierre-Yves' station.  
+I first test with only temperature. 
+
+```{r, warning=FALSE}
+library(climwin)
+library(lme4)
+# select short distance migrants  
+prod_short <- prod %>% 
+  filter(MIGRATION == "Court") %>% 
+  filter(YEAR > 1989)
+
+prod_short_test <- prod_short %>% 
+  filter(ID_PROG == 204) %>% 
+  filter(ESPECE %in% c("PARMAJ", "PARCAE"))
+
+Temp_test <- Temp %>%
+  filter(ID_PROG == 204 & year(DATE2) > 2005) %>% 
+  filter(!is.na(T_Q)) %>% 
+  distinct() 
+
+str(Temp)
+
+# test PARMAJ 204, temp
+MassWin <- slidingwin(xvar = list(Temp = Temp_test$T_Q),  #climate variable = temperature
+                      cdate = Temp_test$Date, 
+                      bdate = prod_short_test$Date,
+                      baseline = glmer(Prod ~ 1 + (1|ESPECE), data = prod_short_test, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(365, 0), # testing all possible climate windows anywhere up to 150 days before the biological record
+                      type = "absolute", refday = c(01, 06), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin"
+                      # spatial = list(prod_short$ID_PROG, Temp$ID_PROG)) #linear relationship (we can test several e.g. c("lin", "quad"))
+)
+
+
+
+# print results
+head(MassWin[[1]]$Dataset)
+# Interpretation: the best climate window is ~60 days before May 20th
+
+MassWin[[1]]$BestModel #coefficients of the best model
+# intercept = 4.3498 ; climate = 0.1044
+
+# Plot
+MassOutput <- MassWin[[1]]$Dataset
+plotdelta(dataset = MassOutput)
+plotweights(dataset = MassOutput)
+#  boxplots of the start and end point of all climate windows that make up the 95% confidence set
+plotwin(dataset = MassOutput)
+
+
+
+## SPEI
+MassWin <- slidingwin(xvar = list(SPEI = SPEI$SPEI),
+                      cdate = SPEI$Date,
+                      bdate = prod$Date,
+                      # baseline = lm(cbind(AD, JUV+AD) ~ 1, data = prod_short, family = binomial, weights=AD+JUV),
+                      baseline = lm(JUV ~ offset(log(AD+0.1)), data = prod_short),
+                      cinterval = "day",
+                      range = c(150, 0),
+                      type = "absolute", refday = c(01, 06),
+                      stat = "mean",
+                      func = "lin", 
+                      spatial = list(prod$ID_PROG, Temp$ID_PROG)) #we can add the list of sites 
+
+
+```
+
+We can only set the range when we have data: if we consider only spring temperatures, we can not set range = c(365,0).  
+But we are mainly interested in spring climate so we will only consider climate variables from 01/03 to 15/07.  
+
+We will run analyses species per species, but I will now try to run climwin using all sites.  
+
+## Combine sites  
+
+As the model takes a very long time to run with all sites, I will first test with only the sites from the Atlantic region:
+
+```{r select atlantic sites}  
+reg <- fread("C:/git/STOC_reporting-master/library/reg_biogeo.csv")
+
+reg$ID_PROG <- as.numeric(gsub("\\D", "", reg$NEW.ID_PROG)) #there was only NEW.ID_PROG but we mostly care about the location
+
+sites_Atl <- reg$ID_PROG[which(reg$BIOGEOREF == "Atlantique")]
+
+```
+
+### Temperature
+
+```{r, warning=FALSE}
+library(climwin)
+library(lme4)
+# select species
+species <- "SYLATR"
+prod_sp <- prod %>% 
+  filter(ESPECE == species) %>% 
+  filter(YEAR > 1999)# %>% # As it takes a very long time and there were not a lot of stations before 2000 we only use data from this date
+  # filter(ID_PROG %in% sites_Atl)
+
+Temp_full <- Temp # save copy of Temp
+# Select only Atlantic sites from 2000
+Temp <- Temp %>%
+  # filter(ID_PROG %in% sites_Atl & year(DATE2) > 1999) %>%
+  filter(!is.na(T_Q)) %>%
+  distinct()
+
+
+MassWin <- slidingwin(xvar = list(Temp = Temp$T_Q),  #climate variable = temperature
+                      cdate = Temp$Date, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, Temp$ID_PROG) #linear relationship (we can test several e.g. c("lin", "quad"))
+)
+
+
+
+# print results
+head(MassWin[[1]]$Dataset)
+# Interpretation: the best climate window is ~40 days before July 1st
+
+MassWin[[1]]$BestModel #coefficients of the best model
+
+# Plot
+MassOutput <- MassWin[[1]]$Dataset
+plotdelta(dataset = MassOutput)
+plotweights(dataset = MassOutput) # we can be 95% confident that the true ‘best’ model falls within the shaded region.
+#  boxplots of the start and end point of all climate windows that make up the 95% confidence set
+plotwin(dataset = MassOutput)
+
+
+```
+
+For PARMAJ, we find a narrow temperature window between 16/05 and 22/05. 
+For SYLATR, ~2days around 06/04.  
+
+To test if it is really significant, we do a randomisation test:  
+
+```{r}
+# Randomization
+MassRand <- randwin(repeats = 5, 
+                    xvar = list(Temp = Temp$T_Q),  #climate variable = temperature
+                    cdate = Temp$Date, 
+                    bdate = prod_sp$Date,
+                    baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                    cinterval = "day", #daily measures (can be "week" or "month")
+                    range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                    type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                    stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                    func = "lin",
+                    spatial = list(prod_sp$ID_PROG, Temp$ID_PROG)) #linear relationship (we can test several e.g. c("lin", "quad"))
+
+# Test for overfitting
+pvalue(dataset = MassWin[[1]]$Dataset, datasetrand = MassRand[[1]], 
+       metric = "C", #here we have a large dataset with few repeats in randwin()
+       sample.size = 23) #Number of years of data
+
+# Plot hist  
+MassRand1 <- MassRand[[1]]
+MassOutput <- MassWin[[1]]$Dataset
+plothist(dataset = MassOutput, datasetrand = MassRand1)  
+
+                   
+```
+_Plot best model_  
+
+```{r}
+
+# generate BestModel and BestModelData for a single climate window (e.g. the best window from a previous analysis)
+
+MassSingle <- singlewin(xvar = list(Temp = Temp$T_Q),  #climate variable = temperature
+                    cdate = Temp$Date, 
+                    bdate = prod_sp$Date,
+                    baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                    cinterval = "day", #daily measures (can be "week" or "month")
+                    range = c(86, 86), # we start from the window we found previously for the best model
+                    type = "absolute", 
+                    refday = c(01, 07), #fixed starting date, on July 1st
+                    stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                    func = "lin",
+                    spatial = list(prod_sp$ID_PROG, Temp$ID_PROG)) 
+
+# plot biological response ~ climate variable
+plotbest(dataset = MassOutput,
+         bestmodel = MassSingle$BestModel,
+         bestmodeldata = MassSingle$BestModelData)
+
+# Plot all previous graphs at the same time  
+plotall(dataset = MassOutput,
+        datasetrand = MassRand,
+        bestmodel = MassSingle$BestModel,
+        bestmodeldata = MassSingle$BestModelData)
+
+```
+
+### SPEI  
+
+```{r}
+library(climwin)
+library(lme4)
+# select species
+species <- "SYLATR"
+prod_sp <- prod %>% 
+  filter(ESPECE == species) %>% 
+  filter(YEAR > 1999) #%>% 
+  # filter(ID_PROG %in% sites_Atl) # keep only Atlantic sites
+
+# keep only sites for which we have climate data  
+prod_sp <- prod_sp %>% filter(ID_PROG %in% unique(SPEI$ID_PROG))
+
+# filter SPEI data  
+# SPEI <- SPEI %>% filter(ID_PROG %in% sites_Atl & YEAR > 1999)
+
+
+MassWin <- slidingwin(xvar = list(SPEI = SPEI$SPEI),  #climate variable = temperature
+                      cdate = SPEI$Date2, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, SPEI$ID_PROG) #linear relationship (we can test several e.g. c("lin", "quad"))
+)
+
+system.time(slidingwin(xvar = list(SPEI = SPEI$SPEI),  #climate variable = temperature
+                      cdate = SPEI$Date2, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, SPEI$ID_PROG) #linear relationship (we can test several e.g. c("lin", "quad"))
+))
+
+# Error in cmatrix[i, ] <- cont$xvar[which(cont$cintno$spatial %in% cont$bintno$spatial[i] &  : incorrect number of subscripts on matrix
+
+# print results
+head(MassWin[[1]]$Dataset)
+# Interpretation: the best climate window is ~60 days before May 20th
+
+MassWin[[1]]$BestModel #coefficients of the best model
+
+# Plot
+MassOutput <- MassWin[[1]]$Dataset
+plotdelta(dataset = MassOutput)
+plotweights(dataset = MassOutput)
+#  boxplots of the start and end point of all climate windows that make up the 95% confidence set
+plotwin(dataset = MassOutput)
+
+
+```
+_Test significativity_  
+```{r}
+
+# Randomization
+MassRand <- randwin(repeats = 5, 
+                      xvar = list(SPEI = SPEI$SPEI),  #climate variable = temperature
+                      cdate = SPEI$Date2, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, SPEI$ID_PROG))
+
+system.time(randwin(repeats = 5, 
+                      xvar = list(SPEI = SPEI$SPEI),  #climate variable = temperature
+                      cdate = SPEI$Date2, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, SPEI$ID_PROG)))
+
+# Test for overfitting
+pvalue(dataset = MassWin[[1]]$Dataset, datasetrand = MassRand[[1]], 
+       metric = "C", #here we have a large dataset with few repeats in randwin()
+       sample.size = 33) #Number of years of data
+
+# Plot hist  
+MassRand1 <- MassRand[[1]]
+MassOutput <- MassWin[[1]]$Dataset
+plothist(dataset = MassOutput, datasetrand = MassRand1)  
+
+```
+ 
+_Plot best model_  
+
+```{r}
+
+# generate BestModel and BestModelData for a single climate window (e.g. the best window from a previous analysis)
+
+MassSingle <- singlewin(xvar = list(SPEI = SPEI$SPEI),  #climate variable = temperature
+                    cdate = SPEI$Date2, 
+                    bdate = prod_sp$Date,
+                    baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                    cinterval = "day", #daily measures (can be "week" or "month")
+                    range = c(107, 104), # we start from the window we found previously for the best model
+                    type = "absolute", 
+                    refday = c(01, 07), #fixed starting date, on July 1st
+                    stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                    func = "lin",
+                    spatial = list(prod_sp$ID_PROG, SPEI$ID_PROG)) 
+
+# plot biological response ~ climate variable
+plotbest(dataset = MassOutput,
+         bestmodel = MassSingle$BestModel,
+         bestmodeldata = MassSingle$BestModelData)
+
+# Plot all previous graphs at the same time  
+plotall(dataset = MassOutput,
+        datasetrand = MassRand1,
+        bestmodel = MassSingle$BestModel,
+        bestmodeldata = MassSingle$BestModelData)
+
+```
+
+
+### NDVI  
+```{r}
+library(climwin)
+library(lme4)
+# select species
+species <- "SYLATR"
+prod_sp <- prod %>% 
+  filter(ESPECE == species) %>% 
+  filter(YEAR > 1999) %>% 
+  filter(ID_PROG %in% sites_Atl) # keep only Atlantic sites
+
+# filter NDVI data  
+NDVI_day <- fread("C:/git/STOC/Variables/data/NDVI_day_climwin")
+NDVI_day <- NDVI_day %>% filter(ID_PROG %in% sites_Atl) %>% 
+  mutate(YEAR = as.factor(YEAR)) %>% 
+  mutate(Date2 = as.factor(paste(ifelse(day(Date) <10, paste0(0, day(Date)), day(Date)), ifelse(month(Date) < 10, paste0(0, month(Date)), month(Date)), year(Date), sep = "/"))) 
+
+# keep only sites for which we have climate data  
+prod_sp <- prod_sp %>% filter(ID_PROG %in% unique(NDVI_day$ID_PROG))
+
+
+MassWin <- slidingwin(xvar = list(NDVI = NDVI_day$NDVI),  #climate variable = temperature
+                      cdate = NDVI_day$Date2, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, NDVI_day$ID_PROG) #linear relationship (we can test several e.g. c("lin", "quad"))
+)
+
+# Error in cmatrix[i, ] <- cont$xvar[which(cont$cintno$spatial %in% cont$bintno$spatial[i] &  : incorrect number of subscripts on matrix
+
+# print results
+head(MassWin[[1]]$Dataset)
+# Interpretation: the best climate window is ~60 days before May 20th
+
+MassWin[[1]]$BestModel #coefficients of the best model
+
+# Plot
+MassOutput <- MassWin[[1]]$Dataset
+plotdelta(dataset = MassOutput)
+plotweights(dataset = MassOutput)
+#  boxplots of the start and end point of all climate windows that make up the 95% confidence set
+plotwin(dataset = MassOutput)
+
+```
+
+
+## ACRSCI (rousserole effarvate)  
+
+### Température  
+
+```{r}
+species <- "ACRSCI"
+prod_sp <- prod %>% 
+  filter(ESPECE == species) %>% 
+  filter(YEAR > 1999) %>% # As it takes a very long time and there were not a lot of stations before 2000 we only use data from this date
+  filter(ID_PROG %in% sites_Atl)
+
+Temp_full <- Temp # save copy of Temp
+# Select only Atlantic sites from 2000
+Temp <- Temp %>%
+  filter(ID_PROG %in% sites_Atl & year(DATE2) > 1999) %>%
+  filter(!is.na(T_Q)) %>%
+  distinct()
+
+
+MassWin <- slidingwin(xvar = list(Temp = Temp$T_Q),  #climate variable = temperature
+                      cdate = Temp$Date, 
+                      bdate = prod_sp$Date,
+                      baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                      cinterval = "day", #daily measures (can be "week" or "month")
+                      range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                      type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                      stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                      func = "lin",
+                      spatial = list(prod_sp$ID_PROG, Temp$ID_PROG) #linear relationship (we can test several e.g. c("lin", "quad"))
+)
+
+
+
+# print results
+head(MassWin[[1]]$Dataset)
+# Interpretation: the best climate window is ~40 days before July 1st
+
+MassWin[[1]]$BestModel #coefficients of the best model
+
+# Plot
+MassOutput <- MassWin[[1]]$Dataset
+plotdelta(dataset = MassOutput)
+plotweights(dataset = MassOutput) # we can be 95% confident that the true ‘best’ model falls within the shaded region.
+#  boxplots of the start and end point of all climate windows that make up the 95% confidence set
+plotwin(dataset = MassOutput)
+
+
+```
+
+```{r}
+# Randomization
+MassRand <- randwin(repeats = 5, 
+                    xvar = list(Temp = Temp$T_Q),  #climate variable = temperature
+                    cdate = Temp$Date, 
+                    bdate = prod_sp$Date,
+                    baseline = glmer(Prod ~ 1 + (1|YEAR) + (1|ID_PROG), data = prod_sp, family = binomial), #null model
+                    cinterval = "day", #daily measures (can be "week" or "month")
+                    range = c(120, 0), # testing all possible climate windows anywhere up to 120 days before the biological record
+                    type = "absolute", refday = c(01, 07), #fixed starting date, on June 1st
+                    stat = "mean", #mean temperatures (we can test several at the same time e.g. c(max, mean))
+                    func = "lin",
+                    spatial = list(prod_sp$ID_PROG, Temp$ID_PROG)) #linear relationship (we can test several e.g. c("lin", "quad"))
+
+# Test for overfitting
+pvalue(dataset = MassWin[[1]]$Dataset, datasetrand = MassRand[[1]], 
+       metric = "C", #here we have a large dataset with few repeats in randwin()
+       sample.size = 23) #Number of years of data
+
+# Plot hist  
+MassRand1 <- MassRand[[1]]
+MassOutput <- MassWin[[1]]$Dataset
+plothist(dataset = MassOutput, datasetrand = MassRand1)  
+
+```
+

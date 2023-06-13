@@ -1,0 +1,910 @@
+---
+title: "2bioperiods_models"
+author: "Nathalie Adenot"
+date: "29/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r libraries}
+library(data.table)
+library(tidyverse)
+library(lubridate)
+library(DataExplorer)
+library(lme4)
+library(nlme)
+library(mgcv) #gamm
+```
+
+## Determine bioperiods  
+
+### Get Life History Traits  
+We decided to set the beginning of the *late breeding period* at hatching.  To find this date, we will start from the peak of captured fledglings and substract the number of days it takes for a juvenile to go from hatching to being independant.  
+We can find this data in Storchova : 
+
+```{r nestling period}
+# import Storchova LHT 
+Storchova <- fread("C:/git/STOC/Variables/data/THV/Storchova.csv")
+
+# Import STOC species  
+sp_capt <- fread("C:/git/STOC/Variables/data/sp_capt.csv")
+
+# Merge data  
+sp_capt_LHT <- sp_capt %>% 
+  rename(Species = nom_sc) %>% 
+  left_join(Storchova[, c("Species", "Nestling period", "Parental feeding", "Age of independence")])
+
+# write.csv(sp_capt_LHT, file = "C:/git/STOC/Variables/data/THV/STOC_Storchova.csv", row.names = FALSE)
+
+
+```
+
+There are still some missing values that we can find elsewhere, such as in the *Handbook of the birds of the world*.  
+(For other LHT there is AVONET, Tobias 2022 but there is no data on breeding). 
+
+For the rest of the analyses, we will only keep species that met the convergence criteria to compute the phenology indicator:
+
+```{r}
+
+# Import pheno data
+pheno <- fread("C:/git/STOC/Variables/data/pheno33.csv")
+
+# Keep only species for which we have the phenology
+sp_mod_LHT <- sp_capt_LHT %>% filter(ESPECE %in% pheno$ESPECE)
+
+spNA <- sp_mod_LHT$Species[is.na(sp_mod_LHT$`Nestling period`)]
+```
+
+We still need to find data for the species `r spNA`.   
+
+_Add missing data_  
+
+For the species we didn't find in Storchova, I will get the information in the *Handbooks of birds of the world* : 
+- *Luscinia svecica* (Bluethroat, Volume 10): "nestling period 13-14 days ; post-fledging dependance up to 1 month, probably usually shorter"
+- *Saxicola torquata* (Common stonechat, Volume 10): "nestling period 13-16 days ; post-fledging dependance 3-4 months in Africa, 8-14 days in Europe in cases of first broods" 
+- *Carduelis cannabina* (Common linnet, Volume 15): "nestling period 10-14 days, young independant after a further 14 days"  
+- *Carduelis chloris* (European greenfinch, Volume 15): "nestling period 14-18 days, young of first brood fed up to 14 days after fledging"   
+
+
+I will now add this to the dataframe sp_mod_LHT. As we have only an interval, I will keep the median of this interval (and in case of a non integer median, I will round the value):  
+
+```{r}
+
+sp_mod_LHT$`Nestling period`[which(sp_mod_LHT$Species == "Luscinia svecica")] <- round(median(13:14))  
+sp_mod_LHT$`Nestling period`[which(sp_mod_LHT$Species == "Saxicola torquata")] <- round(median(13:16))  
+sp_mod_LHT$`Nestling period`[which(sp_mod_LHT$Species == "Carduelis cannabina")] <- round(median(10:14))  
+sp_mod_LHT$`Nestling period`[which(sp_mod_LHT$Species == "Carduelis chloris")] <- round(median(14:18))  
+
+```
+
+### Get hatching date  
+
+We use the phenology indicator created by Paul to get the mean fledging date of species (1 value /species /year).  
+To do so, we will do: *Hatching date = fledgling date - 7 - nestling period*  
+The 7 corresponds to the time juveniles need to really start flying around and get captured. We could also use the variables "Age of independance" or "Parents feeding" but juveniles already get captured when they are still flying with their parents.  
+
+
+```{r pheno}
+
+# Import pheno data
+pheno <- fread("C:/git/STOC/Variables/data/pheno.csv")
+summary(pheno)
+pheno <- pheno %>% 
+  mutate(YEAR = as.factor(YEAR), ESPECE = as.factor(ESPECE))
+
+# Add nestling period
+pheno <- pheno %>% 
+  left_join(sp_mod_LHT) %>% 
+  # Calculate hatching date
+  mutate(Hatching = round(mean_c - 7 - `Nestling period`))
+
+# write.csv(pheno, file = "C:/git/STOC/Variables/data/pheno_hatching.csv", row.names = FALSE)
+
+```
+
+### Estimate climate variables for each period  
+
+The difficulty here is that climate variable will vary for each species as the periods will differ.  
+
+```{r}
+# Import pheno dates  
+pheno_dates <- fread("C:/git/STOC/Variables/data/pheno_hatching.csv")
+
+# Import climate data  
+climate <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+# Import NDVI
+ndvi <- fread("C:/git/STOC/Variables/data/model/var_NDVI_daily_anomalies.csv")
+
+# Merge climate with dates  
+climate_pheno <- climate %>% 
+  rename(YEAR = an) %>% 
+  filter(d > 59 & d <197) %>% # keep spring data
+  dplyr::select(ID_PROG, Date, d, YEAR, T_Q, aTemp, BAL, SPEI) 
+#replace Inf values by value from the previous day
+climate_pheno$SPEI[is.infinite(climate_pheno$SPEI)] <- NA 
+# In the end I don't do this because there are sites with many missing values in a row so it messed up everything
+# library(zoo)
+# climate_pheno <- climate_pheno %>% 
+#   group_by(ID_PROG) %>% 
+#   na.locf() 
+climate_pheno_ <- climate_pheno %>%
+  left_join(pheno_dates, by = "YEAR")
+
+# Create variable "early" and "late"  
+climate_pheno_p <- climate_pheno_ %>% 
+  mutate(period = ifelse(d < Hatching, "early", "late")) %>% 
+  group_by(ID_PROG, YEAR, ESPECE, period) %>% 
+  summarize(meanBAL = mean(BAL), meanSPEI = mean(SPEI, na.rm =TRUE), meanT = mean(T_Q), mean_aT = mean(aTemp))
+  
+# wider  
+climate_pheno_wide <- climate_pheno_p %>% 
+  filter(!is.na(period)) %>% 
+  pivot_wider(names_from = period, values_from = c(meanBAL, meanSPEI, meanT, mean_aT))
+
+# write.csv(climate_pheno_wide, file = "C:/git/STOC/Variables/data/model/mean_climate_sp_2periods.csv", row.names = FALSE)
+
+# Merge NDVI with dates  
+ndvi_pheno <- ndvi %>% 
+  filter(d > 59 & d <197) %>% # keep spring data (normalement on a déjà que le printemps mais bon)
+  dplyr::select(ID_PROG, Date, d, YEAR, NDVI, daNDVI) %>% 
+# Add pheno
+  left_join(pheno_dates, by = "YEAR")  %>% 
+# Create variables "early" and "late"  
+  mutate(period = ifelse(d < Hatching, "early", "late")) %>% 
+  group_by(ID_PROG, YEAR, ESPECE, period) %>% 
+  summarize(meanNDVI = mean(NDVI, na.rm = TRUE), mean_aNDVI = mean(daNDVI, na.rm = TRUE)) %>%  
+  filter(!is.na(period)) %>% 
+  pivot_wider(names_from = period, values_from = c(meanNDVI, mean_aNDVI))
+
+# write.csv(ndvi_pheno, file = "C:/git/STOC/Variables/data/model/mean_ndvi_sp_2periods.csv", row.names = FALSE)
+
+# merge df  
+mean_2periods <- merge(climate_pheno_wide, ndvi_pheno, all = TRUE)
+
+# write.csv(mean_2periods, file = "C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv", row.names = FALSE)
+
+```
+
+
+
+
+### Check colinearity  
+We want to see if there is colinearity between the variables for early and late spring.  
+
+```{r check colinearity}  
+library(DataExplorer)
+
+mean_2periods <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+ndvi_2periods <- fread("C:/git/STOC/Variables/data/model/mean_ndvi_sp_2periods.csv")
+
+plot_correlation(mean_2periods[,4:13], cor_args = list("use" = "pairwise.complete.obs"), type="c") 
+
+# SPEI
+gg <- ggplot(mean_2periods, aes(y = meanSPEI_late, x = meanSPEI_early)) +
+  geom_point(stat = "identity")
+plot(gg) 
+# BAL
+gg <- ggplot(mean_2periods, aes(y = meanBAL_late, x = meanBAL_early)) +
+  geom_point(stat = "identity")
+plot(gg) 
+
+# Temp
+gg <- ggplot(mean_2periods, aes(y = meanT_late, x = meanT_early)) +
+  geom_point(stat = "identity")
+plot(gg) 
+# Temp anomalies  
+gg <- ggplot(mean_2periods, aes(y = mean_aT_late, x = mean_aT_early)) +
+  geom_point(stat = "identity")
+plot(gg)
+
+# NDVI  
+gg <- ggplot(mean_2periods, aes(y = meanNDVI_late, x = meanNDVI_early)) +
+  geom_point(stat = "identity")
+plot(gg)
+# NDVI anomalies  
+gg <- ggplot(mean_2periods, aes(y = mean_aNDVI_late, x = mean_aNDVI_early)) +
+  geom_point(stat = "identity")
+plot(gg)
+
+```
+There is a clear relationship for Temperature, and a pattern for NDVI.  But there is no correlation for SPEI and anomalies.  
+So for anomalies I can use both in the same model. 
+For the mean temperature and NDVI, the correlation is rather high so we can consider that including only the global spring temperature / NDVI is enough and captures the variation. Moreover, we only include the mean site value to take into account the inter-site variability. So to answer our question using the 2 periods only for anomalies would make sense.  
+
+
+
+
+## Models  
+
+As the variables in early and late breeding season are highly correlated, we will need to detrend them by using the residuals. But I will first explore the relationships between productivity and these variables using univariate models. I use GAMM to explore linearities.  
+
+### GAMM univariate   
+
+#### SPEI + BAL  
+_Early spring_  
+
+```{r}
+
+prod <- fread("C:/git/STOC/Variables/data/model/data_model.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+var <- mean_2periods
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanSPEI_early)) # now we keep only our 33 species
+
+# write.csv(var_mod, file = "C:/git/STOC/Variables/data/model/data_model_periods.csv")
+
+var_mod <- fread( "C:/git/STOC/Variables/data/model/data_model_periods.csv")
+
+# plot SPEI
+sp <- ggplot(data=var_mod, aes(x=meanSPEI_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+# select only years >2000 and species in pheno (20 sp)
+var_mod2000 <- var_mod %>% filter(YEAR > 1999 & ESPECE %in% pheno$ESPECE)
+# Model
+mgamm_early_spei <- gamm(cbind(JUV, AD) ~ s(meanSPEI_early), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = var_mod2000)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_spei, file="C:/git/STOC/stats/models/mgamm_early_spei.rda", compress='xz')
+
+plot(mgamm_early_spei$gam,pages=1)
+summary(mgamm_early_spei$lme) # details of underlying lme fit
+summary(mgamm_early_spei$gam) # gam style summary of fitted model
+anova(mgamm_early_spei$gam) 
+gam.check(mgamm_early_spei$gam) # simple checking plots
+
+
+mgamm_early_spei_noSp <- gamm(cbind(JUV, AD) ~ s(meanSPEI_early), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_spei_noSp, file="C:/git/STOC/stats/models/mgamm_early_spei_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_spei_noSp.rda")
+
+plot(mgamm_early_spei_noSp$gam,pages=1)
+summary(mgamm_early_spei_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_spei_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_spei_noSp$gam) 
+gam.check(mgamm_early_spei_noSp$gam) # simple checking plots
+
+# avec log
+mgamm_early_log_spei_noSp <- gamm(cbind(JUV, AD) ~ s(log(meanSPEI_early+0.1)), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_log_spei_noSp, file="C:/git/STOC/stats/models/mgamm_early_log_spei_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_log_spei_noSp")
+
+plot(mgamm_early_log_spei_noSp$gam,pages=1)
+summary(mgamm_early_log_spei_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_log_spei_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_log_spei_noSp$gam) 
+gam.check(mgamm_early_log_spei_noSp$gam) # simple checking plots
+
+
+#### BAL  
+
+# plot BAL
+sp <- ggplot(data=var_mod, aes(x=meanBAL_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+  # ggtitle(eq)
+plot(sp)
+
+# Model
+mgamm_early_BAL_noSp <- gamm(cbind(JUV, AD) ~ s(meanBAL_early), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_BAL_noSp, file="C:/git/STOC/stats/models/mgamm_early_BAL_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_BAL_noSp.rda")
+
+plot(mgamm_early_BAL_noSp$gam,pages=1)
+summary(mgamm_early_BAL_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_BAL_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_BAL_noSp$gam) 
+gam.check(mgamm_early_BAL_noSp$gam) # simple checking plots
+
+# avec log
+mgamm_early_log_BAL_noSp <- gamm(cbind(JUV, AD) ~ s(log(meanBAL_early+0.1)), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_log_BAL_noSp, file="C:/git/STOC/stats/models/mgamm_early_log_BAL_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_log_BAL_noSp")
+
+plot(mgamm_early_log_BAL_noSp$gam,pages=1)
+summary(mgamm_early_log_BAL_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_log_BAL_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_log_BAL_noSp$gam) 
+gam.check(mgamm_early_log_BAL_noSp$gam) # simple checking plots
+
+####################
+#### BAL + SPEI ####
+####################
+
+# Model
+mgamm_early_BAL_SPEI_noSp <- gamm(cbind(JUV, AD) ~ s(meanBAL_early) + s(meanSPEI_early), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_BAL_SPEI_noSp, file="C:/git/STOC/stats/models/mgamm_early_BAL_SPEI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_BAL_SPEI_noSp.rda")
+
+plot(mgamm_early_BAL_SPEI_noSp$gam,pages=1)
+summary(mgamm_early_BAL_SPEI_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_BAL_SPEI_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_BAL_SPEI_noSp$gam) 
+gam.check(mgamm_early_BAL_SPEI_noSp$gam) # simple checking plots
+
+# avec log
+mgamm_early_log_BAL_SPEI_noSp <- gamm(cbind(JUV, AD) ~ s(meanBAL_early) + s(log(meanSPEI_early + 0.1)), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_log_BAL_SPEI_noSp, file="C:/git/STOC/stats/models/mgamm_early_log_BAL_SPEI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_log_BAL_SPEI_noSp")
+
+plot(mgamm_early_log_BAL_SPEI_noSp$gam,pages=1)
+summary(mgamm_early_log_BAL_SPEI_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_log_BAL_SPEI_noSp$gam) # gam style summary of fitted model
+anova(mgamm_early_log_BAL_SPEI_noSp$gam) 
+gam.check(mgamm_early_log_BAL_SPEI_noSp$gam) # simple checking plots
+
+```
+
+_late spring_  
+
+```{r}
+####  SPEI  ####
+# plot SPEI
+sp <- ggplot(data=var_mod, aes(x=meanSPEI_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+# Model
+
+mgamm_late_spei <- gamm(cbind(JUV, AD) ~ s(meanSPEI_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod2000)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_spei, file="C:/git/STOC/stats/models/mgamm_late_spei.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_spei_noSp.rda")
+
+plot(mgamm_late_spei$gam,pages=1)
+summary(mgamm_late_spei$lme) # details of underlying lme fit
+summary(mgamm_late_spei$gam) # gam style summary of fitted model
+anova(mgamm_late_spei$gam) 
+gam.check(mgamm_late_spei$gam) # simple checking plots
+
+
+mgamm_late_spei_noSp <- gamm(cbind(JUV, AD) ~ s(meanSPEI_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_spei_noSp, file="C:/git/STOC/stats/models/mgamm_late_spei_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_spei_noSp.rda")
+
+plot(mgamm_late_spei_noSp$gam,pages=1)
+summary(mgamm_late_spei_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_spei_noSp$gam) # gam style summary of fitted model
+anova(mgamm_late_spei_noSp$gam) 
+gam.check(mgamm_late_spei_noSp$gam) # simple checking plots
+
+
+####  BAL  ####
+# plot BAL
+sp <- ggplot(data=var_mod, aes(x=meanBAL_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+# sp <- sp + geom_abline(intercept = coeff[2], slope = coeff[1], color = "red", linewidth =1.5)+
+  # ggtitle(eq)
+plot(sp)
+
+# Model
+mgamm_late_BAL <- gamm(cbind(JUV, AD) ~ s(meanBAL_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod2000)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_BAL, file="C:/git/STOC/stats/models/mgamm_late_BAL.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_BAL_noSp.rda")
+
+plot(mgamm_late_BAL$gam,pages=1)
+summary(mgamm_late_BAL$lme) # details of underlying lme fit
+summary(mgamm_late_BAL$gam) # gam style summary of fitted model
+anova(mgamm_late_BAL$gam) 
+gam.check(mgamm_late_BAL$gam) # simple checking plots
+
+
+mgamm_late_BAL_noSp <- gamm(cbind(JUV, AD) ~ s(meanBAL_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_BAL_noSp, file="C:/git/STOC/stats/models/mgamm_late_BAL_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_BAL_noSp.rda")
+
+plot(mgamm_late_BAL_noSp$gam,pages=1)
+summary(mgamm_late_BAL_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_BAL_noSp$gam) # gam style summary of fitted model
+anova(mgamm_late_BAL_noSp$gam) 
+gam.check(mgamm_late_BAL_noSp$gam) # simple checking plots
+
+
+####################
+#### BAL + SPEI ####
+####################
+mgamm_late_BAL_SPEI_noSp <- gamm(cbind(JUV, AD) ~ s(log(meanSPEI_late + 0.1)) + s(meanBAL_late), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_BAL_SPEI_noSp, file="C:/git/STOC/stats/models/mgamm_late_BAL_SPEI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_BAL_SPEI_noSp.rda")
+
+plot(mgamm_late_BAL_SPEI_noSp$gam,pages=1)
+summary(mgamm_late_BAL_SPEI_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_BAL_SPEI_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_BAL_SPEI_noSp$gam) 
+gam.check(mgamm_late_BAL_SPEI_noSp$gam) # simple checking plots
+
+```
+
+
+#### Temperature  
+
+_Early spring_  
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanSPEI_early)) # now we keep only our 33 species
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=meanT_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_early_temp_noSp <- gamm(cbind(JUV, AD) ~ s(meanT_early), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_temp_noSp, file="C:/git/STOC/stats/models/mgamm_early_temp_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_temp_noSp.rda")
+
+plot(mgamm_early_temp_noSp$gam,pages=1)
+summary(mgamm_early_temp_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_temp_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_temp_noSp$gam) 
+gam.check(mgamm_early_temp_noSp$gam) # simple checking plots
+
+```
+
+
+_Late spring_  
+```{r}
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=meanT_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_late_temp_noSp <- gamm(cbind(JUV, AD) ~ s(meanT_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_temp_noSp, file="C:/git/STOC/stats/models/mgamm_late_temp_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_temp_noSp.rda")
+
+plot(mgamm_late_temp_noSp$gam,pages=1)
+summary(mgamm_late_temp_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_temp_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_temp_noSp$gam) 
+gam.check(mgamm_late_temp_noSp$gam) # simple checking plots
+
+```
+
+
+#### Temperature anomalies  
+
+_Early spring_  
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanSPEI_early)) # now we keep only our 33 species
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aT_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_early_atemp <- gamm(cbind(JUV, AD) ~ s(mean_aT_early), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = var_mod2000)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_atemp, file="C:/git/STOC/stats/models/mgamm_early_atemp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_atemp.rda")
+
+plot(mgamm_early_atemp$gam,pages=1)
+summary(mgamm_early_atemp$lme) # details of underlying lme fit
+summary(mgamm_early_atemp$gam) # gam style summary of fitted model
+anova(mgamm_early_atemp$gam) 
+gam.check(mgamm_early_atemp$gam) # simple checking plots
+
+
+mgamm_early_atemp_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aT_early), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_atemp_noSp, file="C:/git/STOC/stats/models/mgamm_early_atemp_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_atemp_noSp.rda")
+
+plot(mgamm_early_atemp_noSp$gam,pages=1)
+summary(mgamm_early_atemp_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_atemp_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_atemp_noSp$gam) 
+gam.check(mgamm_early_atemp_noSp$gam) # simple checking plots
+
+```
+
+
+_Late spring_  
+```{r}
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aT_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+
+mgamm_late_atemp <- gamm(cbind(JUV, AD) ~ s(mean_aT_late), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = var_mod2000)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_atemp, file="C:/git/STOC/stats/models/mgamm_late_atemp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_atemp.rda")
+
+plot(mgamm_late_atemp$gam,pages=1)
+summary(mgamm_late_atemp$lme) # details of underlying lme fit
+summary(mgamm_late_atemp$gam) # gam style summary of fitted model
+anova(mgamm_late_atemp$gam) 
+gam.check(mgamm_late_atemp$gam) # simple checking plots
+
+
+mgamm_late_atemp_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aT_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_atemp_noSp, file="C:/git/STOC/stats/models/mgamm_late_atemp_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_atemp_noSp.rda")
+
+plot(mgamm_late_atemp_noSp$gam,pages=1)
+summary(mgamm_late_atemp_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_atemp_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_atemp_noSp$gam) 
+gam.check(mgamm_late_atemp_noSp$gam) # simple checking plots
+
+```
+
+
+
+#### NDVI  
+
+_Early spring_  
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanNDVI_early)) # now we keep only our 33 species
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=meanNDVI_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_early_NDVI <- gamm(cbind(JUV, AD) ~ s(meanNDVI_early), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_NDVI, file="C:/git/STOC/stats/models/mgamm_early_NDVI.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_NDVI_noSp.rda")
+
+plot(mgamm_early_NDVI$gam,pages=1)
+summary(mgamm_early_NDVI$lme) # details of underlying lme fit
+summary(mgamm_early_NDVI$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_NDVI$gam) 
+gam.check(mgamm_early_NDVI$gam) # simple checking plots
+
+```
+
+
+_Late spring_  
+```{r}
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=meanNDVI_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_late_NDVI_noSp <- gamm(cbind(JUV, AD) ~ s(meanNDVI_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_NDVI_noSp, file="C:/git/STOC/stats/models/mgamm_late_NDVI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_NDVI_noSp.rda")
+
+plot(mgamm_late_NDVI_noSp$gam,pages=1)
+summary(mgamm_late_NDVI_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_NDVI_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_NDVI_noSp$gam) 
+gam.check(mgamm_late_NDVI_noSp$gam) # simple checking plots
+
+```
+
+
+### NDVI anomalies    
+
+_Early spring_  
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanNDVI_early)) # now we keep only our 33 species
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aNDVI_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_early_aNDVI_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aNDVI_early), random = list(YEAR = ~1, ID_PROG = ~1,  ESPECE = ~1),  family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_aNDVI_noSp, file="C:/git/STOC/stats/models/mgamm_early_aNDVI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_aNDVI_noSp.rda")
+
+plot(mgamm_early_aNDVI_noSp$gam,pages=1)
+summary(mgamm_early_aNDVI_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_aNDVI_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_aNDVI_noSp$gam) 
+gam.check(mgamm_early_aNDVI_noSp$gam) # simple checking plots
+
+```
+
+_Late spring_  
+```{r}
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aNDVI_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+mgamm_late_aNDVI_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aNDVI_late), random = list(YEAR = ~1, ID_PROG = ~1, ESPECE = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_aNDVI_noSp, file="C:/git/STOC/stats/models/mgamm_late_aNDVI_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_aNDVI_noSp.rda")
+
+plot(mgamm_late_aNDVI_noSp$gam,pages=1)
+summary(mgamm_late_aNDVI_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_aNDVI_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_aNDVI_noSp$gam) 
+gam.check(mgamm_late_aNDVI_noSp$gam) # simple checking plots
+
+```
+
+
+
+#### Temperature anomalies  
+
+_Early spring_  
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aT_early, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanT_early)) # now we keep only our 33 species
+
+mgamm_early_aT_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aT_early), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_aT_noSp, file="C:/git/STOC/stats/models/mgamm_early_aT_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_aT_noSp.rda")
+
+plot(mgamm_early_aT_noSp$gam,pages=1)
+summary(mgamm_early_aT_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_aT_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_aT_noSp$gam) 
+gam.check(mgamm_early_aT_noSp$gam) # simple checking plots
+
+```
+
+
+_Late spring_  
+```{r}
+
+# plot 
+sp <- ggplot(data=var_mod, aes(x=mean_aT_late, y=Prod)) + geom_point(size = 0.7)
+sp <- sp + geom_smooth(se=TRUE)
+plot(sp)
+
+
+mgamm_late_aT_noSp <- gamm(cbind(JUV, AD) ~ s(mean_aT_late), random = list(YEAR = ~1, ID_PROG = ~1), 
+                        family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_aT_noSp, file="C:/git/STOC/stats/models/mgamm_late_aT_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_aT_noSp.rda")
+
+plot(mgamm_late_aT_noSp$gam,pages=1)
+summary(mgamm_late_aT_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_aT_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_aT_noSp$gam) 
+gam.check(mgamm_late_aT_noSp$gam) # simple checking plots
+
+```
+
+#### temperature + anomalies  
+_Early spring_
+```{r}
+prod <- fread("C:/git/STOC/Variables/data/model/Prod.csv")
+var <- fread("C:/git/STOC/Variables/data/model/mean_var_sp_2periods.csv")
+
+var_mod <- prod %>% left_join(var) %>% 
+  filter(!is.na(meanSPEI_early)) # now we keep only our 33 species
+
+mgamm_early_temp_a_noSp <- gamm(cbind(JUV, AD) ~ s(meanT_early) + s(mean_aT_early), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_early_temp_a_noSp, file="C:/git/STOC/stats/models/mgamm_early_temp_a_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_early_temp_a_noSp.rda")
+
+plot(mgamm_early_temp_a_noSp$gam,pages=1)
+summary(mgamm_early_temp_a_noSp$lme) # details of underlying lme fit
+summary(mgamm_early_temp_a_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_early_temp_a_noSp$gam) 
+gam.check(mgamm_early_temp_a_noSp$gam) # simple checking plots
+
+```
+
+_late spring_  
+```{r}
+
+mgamm_late_temp_a_noSp <- gamm(cbind(JUV, AD) ~ s(meanT_late) + s(mean_aT_late), random = list(YEAR = ~1, ID_PROG = ~1), family = binomial, data = var_mod)  
+# This model takes a long time to run, therefore it is saved for later use:
+save(mgamm_late_temp_a_noSp, file="C:/git/STOC/stats/models/mgamm_late_temp_a_noSp.rda", compress='xz')
+# load the model:
+# load("C:/git/STOC/stats/models/mgamm_late_temp_a_noSp.rda")
+
+plot(mgamm_late_temp_a_noSp$gam,pages=1)
+summary(mgamm_late_temp_a_noSp$lme) # details of underlying lme fit
+summary(mgamm_late_temp_a_noSp$gam) # gam style summary of fitted model
+# It's the same whether the variable is scaled or not
+anova(mgamm_late_temp_a_noSp$gam) 
+gam.check(mgamm_late_temp_a_noSp$gam) # simple checking plots
+
+```
+
+
+
+## Use a single date for all years and species  
+It is good to have a precise phenology per year and species, but it still limits the number of species we include in the analysis. So I will also use a mean or median hatching date to determine the early and late periods.  
+
+```{r}
+# Import pheno dates  
+pheno_dates <- fread("C:/git/STOC/Variables/data/pheno_hatching.csv")
+summary(pheno_dates)
+
+hist(pheno_dates$Hatching, breaks = 15)
+
+mean_hatching <- mean(pheno_dates$Hatching) 
+# 132.5  ;  i.e. 12/05
+median_hatching <- median(pheno_dates$Hatching) 
+# 134  ;  i.e. 14/05
+
+```
+
+I will use the median hatching date 14/05 (Julian day 134) as a limit between early and late breeding period.  
+
+I computed early and late spring SPEI in the file SPEI.Rmd  
+
+```{r SPEI 2 periods}
+# import early SPEI
+early_spei <- fread("C:/git/STOC/Variables/data/early_spei_month2.csv")
+summary(early_spei)
+
+# import late SPEI
+late_spei <- fread("C:/git/STOC/Variables/data/late_spei_month2.csv")
+summary(late_spei)
+
+# plot
+hist(early_spei$SPEI) # normal
+hist(late_spei$SPEI) # normal  
+
+```
+
+Early and late SPEI have a similar distribution, normal and centerd on 0.  
+
+### Build dataset with all variables  
+
+```{r early late variables}
+
+# Import climate data  
+climate <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+# Import NDVI
+ndvi <- fread("C:/git/STOC/Variables/data/model/var_NDVI_daily_anomalies.csv")
+
+# keep only useful climate data  
+climate_pheno <- climate %>% 
+  rename(YEAR = an) %>% 
+  filter(d > 72 & d <197) %>% # keep spring data
+  dplyr::select(ID_PROG, Date, d, YEAR, T_Q, aTemp, BAL) 
+
+# Create variable "early" and "late"  
+climate_pheno <- climate_pheno %>% 
+  mutate(period = ifelse(d < 134, "early", "late")) %>%  # early until median hatching date, day = 134
+  group_by(ID_PROG, YEAR, period) %>% 
+  summarize(meanBAL = mean(BAL), meanT = mean(T_Q), mean_aT = mean(aTemp))
+  
+# wider  
+climate_pheno_wide <- climate_pheno %>% 
+  filter(!is.na(period)) %>% 
+  pivot_wider(names_from = period, values_from = c(meanBAL, meanT, mean_aT))
+
+# Merge with SPEI
+early_spei <- early_spei %>% mutate(early_SPEI = SPEI) %>% select(Year, ID_PROG, early_SPEI) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG))
+late_spei <- late_spei %>% mutate(late_SPEI = SPEI) %>% select(Year, ID_PROG, late_SPEI) %>% 
+  mutate(ID_PROG = as.factor(ID_PROG))
+
+climate_pheno_wide <- climate_pheno_wide %>% 
+  mutate(ID_PROG = as.factor(ID_PROG)) %>%
+  left_join(early_spei, by = c("ID_PROG", "YEAR" = "Year")) %>% 
+  left_join(late_spei, by = c("ID_PROG", "YEAR" = "Year"))
+
+# write.csv(climate_pheno_wide, file = "C:/git/STOC/Variables/data/model/mean_climate_2periods.csv", row.names = FALSE)
+
+# Merge NDVI with dates  
+ndvi_pheno <- ndvi %>% 
+  filter(d > 72 & d <197) %>% # keep spring data (normalement on a déjà que le printemps mais bon)
+  dplyr::select(ID_PROG, Date, d, YEAR, NDVI, daNDVI) %>% 
+# Create variables "early" and "late"  
+  mutate(period = ifelse(d < 134, "early", "late")) %>% 
+  group_by(ID_PROG, YEAR, period) %>% 
+  summarize(meanNDVI = mean(NDVI, na.rm = TRUE), mean_aNDVI = mean(daNDVI, na.rm = TRUE)) %>%  
+  filter(!is.na(period)) %>% 
+  pivot_wider(names_from = period, values_from = c(meanNDVI, mean_aNDVI))
+
+# write.csv(ndvi_pheno, file = "C:/git/STOC/Variables/data/model/mean_ndvi_2periods.csv", row.names = FALSE)
+
+# merge df  
+mean_2periods <- merge(climate_pheno_wide, ndvi_pheno, all = TRUE)
+# We only have data from 2000 for NDVI
+
+# write.csv(mean_2periods, file = "C:/git/STOC/Variables/data/model/mean_var_2periods.csv", row.names = FALSE)
+
+```
+

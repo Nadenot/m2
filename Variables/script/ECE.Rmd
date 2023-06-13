@@ -1,0 +1,796 @@
+---
+title: "ECE"
+author: "Nathalie Adenot"
+date: "2023-03-28"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Extreme Climatic events  
+
+We want to investigate when climate is really extreme.  
+Extreme climatic events "can be defined quantitatively in two ways:
+- related to a specific _threshold_ (possibly impact-related);
+- related to their _probability of occurrence_" (Ummenhofer et al., 2017)  
+
+But it is not easy to determine impact-related thresholds, so most of the time we "use a frequency distribution of climatic events and designates conditions falling within an arbitrary percentage region (often 5%) at either end of the distribution as extreme" (Wingfield et al., 2017). 
+
+_SPEI_    
+For SPEI, specific threshold are defined in the literature : SPEI < -1 is considered outside the range of normal variability, with -2 < SPEI < -1.5 being considered severe drought and SPEI < -2 extreme drought. But this static threshold is dependent on the data as the SPEI is standardized using the distribution of data during a reference period.  
+
+_Temperature_  
+For temperature, it is possible to determine threshold from which organisms are more strongly affected (e.g. higher mortality rate) but it is species-dependant (see Danner et al., 2021,  https://doi.org/10.1002/ece3.7194 ; McWhorter et al., 2018, https://doi.org/10.1242/jeb.168930 ; Cunningham et al., 2013). 
+But the threshold can also be defined relative to the distribution of data:  
+- "number of hot days was defined as the number of days when daily maximum temperature was higher than 30.9°C, the 90th percentile of our daily maximum temperature data in April-August 2005-2010. This value corresponds well with the definition used in human meteorology, i.e. days with >30°C maximum temperature are considered heat days" (Pipoly 2013)  
+_NDVI_  
+It is less clear whether it would make sense to consider extreme NDVI values, as it is a more stable phenomenon that rely on long-term processes.  
+
+## Examine distribution  
+To determine the thresholds we will use, we first need to look at the distribution of our climate variables.  
+As we have several sites in different climates, we consider temperature anomalies (else most hot days would probably be in the Mediterranean area).  
+
+
+
+```{r distribution}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+var <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+
+# Plot distribution: hist
+#############################
+##  Temperature anomalies  ##
+#############################
+gg <- ggplot(var, aes(x=aTemp)) + 
+  geom_histogram(binwidth=0.5)
+gg
+
+# get 1%, 5% and 10% quantiles 
+q1 <- quantile(var$aTemp, probs = 0.01, na.rm = TRUE)
+q99 <- quantile(var$aTemp, probs = 0.99, na.rm = TRUE)
+q5 <- quantile(var$aTemp, probs = 0.05, na.rm = TRUE)
+q95 <- quantile(var$aTemp, probs = 0.95, na.rm = TRUE)
+q10  <- quantile(var$aTemp, probs = 0.1, na.rm = TRUE)
+q90  <- quantile(var$aTemp, probs = 0.9, na.rm = TRUE)
+
+# Add vertical line to the plot
+gg <- gg + geom_vline(aes(xintercept=q1),
+            color="red", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q99),
+            color="red", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q5),
+            color="blue", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q95),
+            color="blue", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q10),
+            color="green", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q90),
+            color="green", linetype="dashed", linewidth=1)
+gg 
+
+
+############
+##  SPEI  ##
+############
+gg <- ggplot(var, aes(x=SPEI)) + 
+  geom_histogram(binwidth=0.1)
+gg
+
+# get 1%, 5% and 10% quantiles 
+q1 <- quantile(var$SPEI, probs = 0.01, na.rm = TRUE)
+q99 <- quantile(var$SPEI, probs = 0.99, na.rm = TRUE)
+q5 <- quantile(var$SPEI, probs = 0.05, na.rm = TRUE)
+q95 <- quantile(var$SPEI, probs = 0.95, na.rm = TRUE)
+q10  <- quantile(var$SPEI, probs = 0.1, na.rm = TRUE)
+q90  <- quantile(var$SPEI, probs = 0.9, na.rm = TRUE)
+
+# Add vertical line to the plot
+gg <- gg + geom_vline(aes(xintercept=q1),
+            color="red", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q99),
+            color="red", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q5),
+            color="blue", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q95),
+            color="blue", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q10),
+            color="green", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q90),
+            color="green", linetype="dashed", linewidth=1)
+gg 
+
+####################
+## NDVI anomalies ##
+####################
+
+aNDVI <- fread("C:/git/STOC/Variables/data/model/var_NDVI_daily_anomalies.csv")
+gg <- ggplot(aNDVI, aes(x=daNDVI)) + 
+  geom_histogram(binwidth=0.01)
+gg
+
+# get 1%, 5% and 10% quantiles 
+q1 <- quantile(aNDVI$daNDVI, probs = 0.01, na.rm = TRUE)
+q99 <- quantile(aNDVI$daNDVI, probs = 0.99, na.rm = TRUE)
+q5 <- quantile(aNDVI$daNDVI, probs = 0.05, na.rm = TRUE)
+q95 <- quantile(aNDVI$daNDVI, probs = 0.95, na.rm = TRUE)
+q10  <- quantile(aNDVI$daNDVI, probs = 0.1, na.rm = TRUE)
+q90  <- quantile(aNDVI$daNDVI, probs = 0.9, na.rm = TRUE)
+
+# Add vertical line to the plot
+gg <- gg + geom_vline(aes(xintercept=q1),
+            color="red", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q99),
+            color="red", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q5),
+            color="blue", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q95),
+            color="blue", linetype="dashed", linewidth=1)
+gg <- gg + geom_vline(aes(xintercept=q10),
+            color="green", linetype="dashed", linewidth=1) 
+gg <- gg +geom_vline(aes(xintercept=q90),
+            color="green", linetype="dashed", linewidth=1)
+gg 
+
+```
+
+On these graphs, we don't see a threshold that would really characterize abnormal days.  
+10% seems to be still too much within the distribution, so maybe 5% is the best solution.  
+
+For SPEI, the 5% quantile corresponds to -1.43, so close to the -1.5 threshold defining severe drought.   
+So 5% could be a good solution for both temperature and SPEI.  
+
+```{r consecutive extreme days}
+library(tidyverse)
+# Calculer nombre de jours consécutifs au-delà du seuil  
+# Pour l'instant je pars sur un seuil de 5%
+
+##########
+## SPEI ##
+##########
+# Pour le SPEI, les jours secs correspondent aux faibles valeurs, donc je garde les valeurs sous le seuil
+q5 <- quantile(var$SPEI, probs = 0.05, na.rm = TRUE) # -1.43
+# Pour le SPEI je vais plutôt partir sur le seuil de -1.5. Le seuil -2 est souvent trouvé dans la littérature mais en prenant -1.5 (= severe drought) on regroupe ~5% des données, comme la température 
+spei <- var[,c("ID_PROG", "Date", "an", "d", "SPEI")]
+# keep only non NA values
+spei <- spei %>% filter(!is.na(SPEI))
+#replace Inf values by value from the previous day
+spei$SPEI[is.infinite(spei$SPEI)] <- NA 
+library(zoo)
+spei <- spei %>% 
+  arrange(ID_PROG) %>% 
+  na.locf()
+
+# Add column ECE to say if it's an extreme day  
+spei$ECE <- FALSE
+spei$ECE[spei$SPEI < -1.5] <- TRUE
+
+
+# Add column with the number of consecutive extreme days
+spei$nbECE <- 0
+
+# keep only values from 01/03 to 15/07
+spei <- spei[spei$d > 59 & spei$d < 197,]
+
+####  Count nb of ECE per site and year  ####
+
+spei_T <- spei %>% filter(ECE == TRUE) # keep only ECE to have less rows to go through in the loop
+
+spei_nb_ece <- spei_T %>% 
+  group_by(ID_PROG, an) %>% 
+  count() %>% 
+  rename(nb_ECE_SPEI = n)
+
+
+n <- 1 #initialize number of ECE in a row (we only have ECE so minimum is 1)
+
+#####  Count number of consecutive days  #####
+for(i in 2:nrow(spei_T)){
+  if(spei_T$ID_PROG[i] != spei_T$ID_PROG[i-1] | spei_T$an[i] != spei_T$an[i-1] | spei_T$d[i] != spei_T$d[i-1] + 1){ #if new site or new year or not consecutive ECE
+    n <- 1
+    spei_T$nbECE[i] <- n
+  } else if(spei_T$d[i] == spei_T$d[i-1] + 1){ # if ECE the next day
+     n <- n+1  
+     spei_T$nbECE[i] <- n
+  } 
+}
+
+#get max value  
+mx <- spei_T$nbECE[nrow(spei_T)]
+for(i in (nrow(spei_T)-1):2){
+  if((spei_T$ID_PROG[i] != spei_T$ID_PROG[i+1] | spei_T$an[i] != spei_T$an[i+1])) mx <- spei_T$nbECE[i]
+  if(spei_T$nbECE[i] < mx & spei_T$d[i] == (spei_T$d[i+1] - 1)) spei_T$nbECE[i] <- 0
+  if(spei_T$nbECE[i] > mx) mx <- spei_T$nbECE[i]
+}
+
+spei_ece <- spei %>% 
+  group_by(ID_PROG, an, ECE) %>% 
+  count() %>% 
+  pivot_wider(names_from = ECE, values_from = n) %>% 
+  mutate(prop_ECE = TRUE/(TRUE + FALSE))
+
+# write.csv(spei_T, file = "C:/git/STOC/Variables/data/model/nbECEconsSPEI.csv", row.names = FALSE)
+
+# Plot nombre de jours consécutifs au-delà du seuil 
+spei_T <- spei_T %>% filter(nbECE>0) %>% mutate(nbECE = as.factor(nbECE))
+gg <- ggplot(spei_T, aes(x=nbECE)) + 
+  geom_bar() + labs(title = "Number of consecutive days considered ECE (SPEI < -1.5)")
+gg
+
+
+##################
+## Températures ##
+##################
+# Pour les températures, les jours chauds correspondents aux anomalies positives, donc je garde les valeurs au-dessus du seuil
+q95 <- quantile(var$aTemp, probs = 0.95, na.rm = TRUE) # 
+atemp <- var[,c("ID_PROG", "Date", "an", "d", "aTemp")]
+# keep only values from 01/03 to 15/07
+atemp <- atemp[atemp$d > 59 & atemp$d < 197,]
+
+
+# Add column ECE to say if it's an extreme day  
+atemp$ECE <- FALSE
+atemp$ECE[atemp$aTemp > q95] <- TRUE
+
+atemp_T <- atemp %>% filter(ECE == TRUE) # keep only ECE to have less rows to go through in the loop
+
+####  Count number of ECE per site and year  ####  
+atemp_nb_ece <- atemp_T %>% 
+  group_by(ID_PROG, an) %>% 
+  count() %>% 
+  rename(nb_ECE_aTemp = n)
+
+# merge with SPEI  
+nb_ece <- atemp_nb_ece %>% 
+  left_join(spei_nb_ece)
+write.csv(nb_ece, file = "C:/git/STOC/Variables/data/model/nb_ece.csv", row.names = FALSE)
+
+# Add column with the number of consecutive extreme days
+atemp_T$nbECE <- 1
+
+n <- 1 #initialize number of ECE in a row (we only have ECE so minimum is 1)
+
+# Count number of consecutive days
+for(i in 2:nrow(atemp_T)){
+  if(atemp_T$ID_PROG[i] != atemp_T$ID_PROG[i-1] | atemp_T$an[i] != atemp_T$an[i-1] | atemp_T$d[i] != atemp_T$d[i-1] + 1){ #if new site or new year or not consecutive ECE
+    n <- 1
+    atemp_T$nbECE[i] <- n
+  } else if(atemp_T$d[i] == atemp_T$d[i-1] + 1){ # if ECE the next day
+     n <- n+1  
+     atemp_T$nbECE[i] <- n
+  } 
+}
+
+# atemp_true <- atemp_T
+
+#get max value  
+mx <- atemp_T$nbECE[nrow(atemp_T)]
+for(i in (nrow(atemp_T)-1):2){
+  if((atemp_T$ID_PROG[i] != atemp_T$ID_PROG[i+1] | atemp_T$an[i] != atemp_T$an[i+1])) mx <- atemp_T$nbECE[i]
+  if(atemp_T$nbECE[i] < mx & atemp_T$d[i] == (atemp_T$d[i+1] - 1)) atemp_T$nbECE[i] <- 0
+  if(atemp_T$nbECE[i] > mx) mx <- atemp_T$nbECE[i]
+}
+
+atemp_T <- atemp_T %>% filter(nbECE>0) %>% mutate(nbECE = as.factor(nbECE))
+
+# write.csv(atemp_T, file = "C:/git/STOC/Variables/data/model/nbECEconsTemp.csv", row.names = FALSE)
+
+# Plot nombre de jours consécutifs au-delà du seuil 
+gg <- ggplot(atemp_T, aes(x=nbECE)) + 
+  geom_bar() + labs(title = "Number of consecutive days considered ECE", subtitle =  "(Temperature anomalies > 5.1°C ; >95%)")
+gg
+
+
+```
+
+
+### Early/late periods  
+
+```{r}
+
+##########
+## SPEI ##
+##########
+# Pour le SPEI, les jours secs correspondent aux faibles valeurs, donc je garde les valeurs sous le seuil
+q5 <- quantile(var$SPEI, probs = 0.05, na.rm = TRUE) # -1.43
+# Pour le SPEI je vais plutôt partir sur le seuil de -1.5. Le seuil -2 est souvent trouvé dans la littérature mais en prenant -1.5 (= severe drought) on regroupe ~5% des données, comme la température 
+spei <- var[,c("ID_PROG", "Date", "an", "d", "SPEI")]
+# keep only non NA values
+spei <- spei %>% filter(!is.na(SPEI))
+#replace Inf values by value from the previous day
+spei$SPEI[is.infinite(spei$SPEI)] <- NA 
+library(zoo)
+spei <- spei %>% 
+  arrange(ID_PROG) %>% 
+  na.locf()
+
+# Add column ECE to say if it's an extreme day  
+spei$ECE <- FALSE
+spei$ECE[spei$SPEI < -1.5] <- TRUE
+
+# keep only values from 15/03 to 14/05
+spei <- spei[spei$d > 73 & spei$d < 197,]
+
+
+# # Add column with the number of consecutive extreme days
+# spei$nbECE <- 0
+# 
+# 
+# ## EARLY  
+# # keep only values from 15/03 to 14/05  
+# spei_early <- spei[spei$d > 73 & spei$d < 134,]
+# 
+# ## LATE  
+# # keep only values from 15/05 to 15/07  
+# spei_late <- spei[spei$d >= 134 & spei$d < 197,]
+
+
+####  Count nb of ECE per site and year  ####
+
+spei_T <- spei %>% 
+  mutate(period = ifelse(d<134, "early", "late")) %>% filter(ECE == TRUE) # keep only ECE to have less rows to go through in the loop
+
+spei_nb_ece <- spei_T %>% 
+  group_by(ID_PROG, an, period) %>% 
+  count() %>% 
+  rename(nb_ECE_SPEI = n) %>% 
+  pivot_wider(names_from = period, values_from = nb_ECE_SPEI) %>% 
+  mutate(early_nb_ECE_SPEI = replace_na(early, 0), late_nb_ECE_SPEI = replace_na(late, 0)) 
+
+
+
+
+##################
+## Températures ##
+##################
+# Pour les températures, les jours chauds correspondents aux anomalies positives, donc je garde les valeurs au-dessus du seuil
+q95 <- quantile(var$aTemp, probs = 0.95, na.rm = TRUE) # 
+atemp <- var[,c("ID_PROG", "Date", "an", "d", "aTemp")]
+# keep only values from 01/03 to 15/07
+atemp <- atemp[atemp$d > 59 & atemp$d < 197,]
+
+
+# Add column ECE to say if it's an extreme day  
+atemp$ECE <- FALSE
+atemp$ECE[atemp$aTemp > q95] <- TRUE
+
+atemp_T <- atemp %>% mutate(period = ifelse(d<134, "early", "late")) %>% filter(ECE == TRUE) # keep only ECE to have less rows to go through in the loop
+
+####  Count number of ECE per site and year  ####  
+atemp_nb_ece <- atemp_T %>% 
+  group_by(ID_PROG, an, period) %>% 
+  count() %>% 
+  rename(nb_ECE_aTemp = n) %>% 
+  pivot_wider(names_from = period, values_from = nb_ECE_aTemp) %>% 
+  mutate(early_nb_ECE_aTemp = replace_na(early, 0), late_nb_ECE_aTemp = replace_na(late, 0)) 
+
+
+# merge with SPEI  
+nb_ece <- atemp_nb_ece %>% 
+  left_join(spei_nb_ece, by = c("ID_PROG", "an")) %>% 
+  select(ID_PROG, an, early_nb_ECE_aTemp, late_nb_ECE_aTemp, early_nb_ECE_SPEI, late_nb_ECE_SPEI)
+write.csv(nb_ece, file = "C:/git/STOC/Variables/data/model/nb_ece_early_late.csv", row.names = FALSE)
+
+# Add column with the number of consecutive extreme days
+atemp_T$nbECE <- 1
+
+n <- 1 #initialize number of ECE in a row (we only have ECE so minimum is 1)
+
+# Count number of consecutive days
+for(i in 2:nrow(atemp_T)){
+  if(atemp_T$ID_PROG[i] != atemp_T$ID_PROG[i-1] | atemp_T$an[i] != atemp_T$an[i-1] | atemp_T$d[i] != atemp_T$d[i-1] + 1){ #if new site or new year or not consecutive ECE
+    n <- 1
+    atemp_T$nbECE[i] <- n
+  } else if(atemp_T$d[i] == atemp_T$d[i-1] + 1){ # if ECE the next day
+     n <- n+1  
+     atemp_T$nbECE[i] <- n
+  } 
+}
+
+# atemp_true <- atemp_T
+
+#get max value  
+mx <- atemp_T$nbECE[nrow(atemp_T)]
+for(i in (nrow(atemp_T)-1):2){
+  if((atemp_T$ID_PROG[i] != atemp_T$ID_PROG[i+1] | atemp_T$an[i] != atemp_T$an[i+1])) mx <- atemp_T$nbECE[i]
+  if(atemp_T$nbECE[i] < mx & atemp_T$d[i] == (atemp_T$d[i+1] - 1)) atemp_T$nbECE[i] <- 0
+  if(atemp_T$nbECE[i] > mx) mx <- atemp_T$nbECE[i]
+}
+
+atemp_T <- atemp_T %>% filter(nbECE>0) %>% mutate(nbECE = as.factor(nbECE))
+
+# write.csv(atemp_T, file = "C:/git/STOC/Variables/data/model/nbECEconsTemp.csv", row.names = FALSE)
+
+# Plot nombre de jours consécutifs au-delà du seuil 
+gg <- ggplot(atemp_T, aes(x=nbECE)) + 
+  geom_bar() + labs(title = "Number of consecutive days considered ECE", subtitle =  "(Temperature anomalies > 5.1°C ; >95%)")
+gg
+
+
+```
+
+
+In the model, we could consider only extreme episodes of more than x days (e.g. 3 consecutive days as for heat waves - canicule).  
+
+So I will now count how many times there has been more than 3 consecutive dry/hot days. 
+
+```{r long dry periods}
+############
+##  SPEI  ##
+############
+
+nbECE_SPEI <- fread("C:/git/STOC/Variables/data/model/nbECEconsSPEI.csv")
+
+# Count number of events >= 3 days  
+nbECE3SPEI <- nbECE_SPEI %>% 
+  filter(nbECE > 2) %>% 
+  group_by(ID_PROG, an) %>% 
+  count() %>% 
+  rename(ECE3SPEI = n)
+
+# plot
+gg <- ggplot(data=nbECE3SPEI, aes(x=an, y=n/length(unique(nbECE3SPEI$ID_PROG)))) +
+  geom_bar(stat="identity") +
+  labs(title="Mean number of extreme events > 3 days per site for SPEI (spring)", 
+         x="", y = "Mean number of extreme dry events > 3 days per site")
+gg
+
+
+###################
+##  Temperature  ##
+###################
+
+nbECE_temp <- fread("C:/git/STOC/Variables/data/model/nbECEconsTemp.csv")
+
+# Count number of events >= 3 days  
+nbECE3temp <- nbECE_temp %>% 
+  filter(nbECE > 2) %>% 
+  group_by(ID_PROG, an) %>% 
+  count() %>% 
+  rename(ECE3temp = n)
+
+# plot
+gg <- ggplot(data=nbECE3temp, aes(x=an, y=n/length(unique(nbECE3temp$ID_PROG)))) +
+  geom_bar(stat="identity") +
+  labs(title="Mean number of extreme events > 3 days per site for temperature (spring)", 
+         x="", y = "Mean number of extreme hot events > 3 days per site")
+gg
+
+
+# Merge temp and SPEI  
+nb3ECE <- nbECE3temp %>% s
+  full_join(nbECE3SPEI) %>% 
+  mutate(ECE3SPEI = replace_na(ECE3SPEI, 0))
+
+write.csv(nb3ECE, file = "C:/git/STOC/Variables/data/model/nb3ECEcons.csv", row.names = FALSE)
+```
+
+
+
+We want to know when and where there are the most extreme days:
+
+```{r}
+### Explore distribution of ECE
+
+## Temporal 
+
+# SPEI 
+spei_ECE <- spei_ECE[spei_ECE$d > 59 & spei_ECE$d < 197,]
+# Count ECEs per year and per site 
+spei_ECE_ <- spei_ECE %>% 
+  group_by(an, ID_PROG) %>% 
+  count()
+# Count ECEs per site 
+spei_ECE_site <- spei_ECE %>% 
+  group_by(ID_PROG) %>% 
+  count()
+# Count ECEs per year
+spei_ECE_year <- spei_ECE %>% 
+  group_by(an) %>% 
+  count()
+# Plot number of ECEs per year
+gg <- ggplot(data=spei_ECE_year, aes(x=an, y=n)) +
+  geom_bar(stat="identity") +
+  labs(title="Total number of ECE per year for SPEI (spring)", 
+         x="", y = "Total number of days SPEI < -1.5")
+gg
+# mean per site  
+gg <- ggplot(data=spei_ECE_, aes(x=as.factor(an), y=n)) +
+  geom_boxplot() +
+  labs(title="Number of ECE per year and site for SPEI (spring)", 
+         x="", y = "Number of days SPEI < -2")+
+  theme(axis.text.x = element_text(angle = 90))
+gg
+
+
+# Temp 
+temp_ECE <- temp_ECE[temp_ECE$d > 59 & temp_ECE$d < 197,]
+# Count ECEs per year and per site 
+temp_ECE_ <- temp_ECE %>% 
+  group_by(an, ID_PROG) %>% 
+  count()
+# Count ECEs per site 
+temp_ECE_site <- temp_ECE %>% 
+  group_by(ID_PROG) %>% 
+  count()
+# Count ECEs per year
+temp_ECE_year <- temp_ECE %>% 
+  group_by(an) %>% 
+  count()
+# Plot number of ECEs per year
+gg <- ggplot(data=temp_ECE_year, aes(x=an, y=n)) +
+  geom_bar(stat="identity") +
+  labs(title="Total number of ECE per year for Temperature (spring)", 
+         x="", y = "Total number of days aTemp > 5")
+gg
+# mean per site  
+gg <- ggplot(data=temp_ECE_, aes(x=as.factor(an), y=n)) +
+  geom_boxplot() +
+  labs(title="Number of ECE per year and site for Temperature (spring)", 
+         x="", y = "Number of days aTemp > 5")+
+  theme(axis.text.x = element_text(angle = 90))
+gg
+
+
+## Spatial  
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+
+# fond de carte
+france <- map_data("france")
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                 panel.background = element_rect(colour = NA),
+                 plot.background = element_rect(colour = NA),
+                 axis.title = element_text(face = "bold",size = rel(1)),
+                 axis.title.y = element_text(angle=90,vjust =2),
+                 axis.title.x = element_text(vjust = -0.2),
+                 legend.position=NULL)
+
+## SPEI
+# Add coordinates
+data_model <- read.csv("D:/Stage/STOC/model/data_model.csv")
+spei_ECE_site <- spei_ECE_site %>% 
+  left_join(data_model[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = spei_ECE_site,aes(LON,LAT, colour=n),size=2)
+gg <- gg + scale_color_gradient2(midpoint=210,  low="#fee5d9", mid="#fb6a4a", high="#99000d", space = "Lab")
+plot(gg)
+
+
+## Temperatures
+# Add coordinates
+data_model <- read.csv("D:/Stage/STOC/model/data_model.csv")
+temp_ECE_site <- temp_ECE_site %>% 
+  left_join(data_model[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = temp_ECE_site,aes(LON,LAT, colour=n),size=2)
+gg <- gg + scale_color_gradient2(midpoint=210,  low="#fee5d9", mid="#fb6a4a", high="#99000d", space = "Lab")
+plot(gg)
+
+```
+
+
+
+
+## Year-site anomalies  
+I have determined extreme days for each site.  
+I also want to know which site-years are extremes. For that, I will use SPEI computed over spring, and average temperature anomalies.  
+
+### Extreme SPEI  
+
+```{r}
+SPEI <- fread("C:/git/STOC/Variables/data/spei_month4.csv")
+summary(SPEI)
+hist(SPEI$SPEI, breaks = 20)
+
+q5 <- quantile(SPEI$SPEI, probs = 0.05, na.rm = TRUE) # -1.59
+q8 <- quantile(SPEI$SPEI, probs = 0.08, na.rm = TRUE) # -1.50 --> -1.5 corresponds to 8% of data
+
+# determine ECE  
+ECE_spei <- SPEI %>% 
+  select(Year, ID_PROG, SPEI) %>% 
+  mutate(ECE = ifelse(SPEI < -1.5, "true", "false"))
+
+# % ECE sites per year  
+ECE_spei_year <- ECE_spei %>% 
+  group_by(Year, ECE) %>% 
+  count()
+ECE_spei_year_plot <- ECE_spei_year %>% 
+  pivot_wider(names_from = ECE, values_from = n) %>% 
+  mutate(true = replace_na(true, 0)) %>% 
+  mutate(perc_ECE = true/(true + false))
+
+# plot 
+gg <- ggplot(data= ECE_spei_year_plot, aes(x=as.factor(Year), y=perc_ECE)) +
+  geom_bar(stat="identity") +
+  labs(title="% of sites experiencing ECE per year for SPEI (spring)", 
+         x="", y = "number of sites which spring SPEI < 1.5") +
+  theme(axis.text.x = element_text(angle=90))
+gg
+
+
+# % ECE years per site
+ECE_spei_site <- ECE_spei %>% 
+  group_by(ID_PROG, ECE) %>% 
+  count() 
+ECE_spei_site_plot <- ECE_spei_site %>% 
+  pivot_wider(names_from = ECE, values_from = n) %>% 
+  mutate(true = replace_na(true, 0)) %>% 
+  mutate(perc_ECE = true/(true + false))
+
+## Spatial  
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+
+# fond de carte
+france <- map_data("france")
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                 panel.background = element_rect(colour = NA),
+                 plot.background = element_rect(colour = NA),
+                 axis.title = element_text(face = "bold",size = rel(1)),
+                 axis.title.y = element_text(angle=90,vjust =2),
+                 axis.title.x = element_text(vjust = -0.2),
+                 legend.position=NULL)
+
+## SPEI
+# Add coordinates
+data_model <- read.csv("C:/git/STOC/variables/data/model/data_model.csv")
+ECE_spei_site_plot <- ECE_spei_site_plot %>% 
+  left_join(data_model[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = ECE_spei_site_plot, aes(LON,LAT, colour=perc_ECE),size=2)
+gg <- gg + scale_color_gradient2(midpoint=0.1,  low="#fee5d9", mid="#fb6a4a", high="#99000d", space = "Lab")
+gg <- gg + labs(colour = "% of years with \n spring SPEI < -1.5")
+plot(gg)
+
+
+```
+
+### Extreme temperature  
+
+```{r}
+
+# Import temperature data  
+climate <- fread("C:/git/STOC/Variables/data/model/var_climat_daily_anomalies.csv")
+
+# Calculate mean spring temperature
+spring_temp <- climate %>% 
+  mutate(d = yday(Date)) %>% 
+  filter(d > 73 & d < 197) %>% 
+  group_by(an, ID_PROG) %>% 
+  summarise(mean_aT = mean(aTemp))
+  
+summary(spring_temp)
+hist(spring_temp$mean_aT, breaks = 20)
+
+q95 <- quantile(spring_temp$mean_aT, probs = 0.95, na.rm = TRUE) # 1.35
+q92 <- quantile(spring_temp$mean_aT, probs = 0.92, na.rm = TRUE) # 1.19 --> 8% of data corresponds to +1.19°C
+
+# determine ECE  
+ECE_temp <- spring_temp %>% 
+  select(an, ID_PROG, mean_aT) %>% 
+  mutate(ECE = ifelse(mean_aT > 1.35, "true", "false"))
+
+# % ECE sites per year  
+ECE_temp_year <- ECE_temp %>% 
+  group_by(an, ECE) %>% 
+  count()
+ECE_temp_year_plot <- ECE_temp_year %>% 
+  pivot_wider(names_from = ECE, values_from = n) %>% 
+  mutate(true = replace_na(true, 0)) %>% 
+  mutate(perc_ECE = true/(true + false))
+
+# plot 
+gg <- ggplot(data= ECE_temp_year_plot, aes(x=as.factor(an), y=perc_ECE)) +
+  geom_bar(stat="identity") +
+  labs(title="% of sites experiencing ECE per year for temperature (spring)", 
+         x="", y = "number of sites which spring temperature anomalies < 1.35") +
+  theme(axis.text.x = element_text(angle=90))
+gg
+
+
+# % ECE years per site
+ECE_temp_site <- ECE_temp %>% 
+  group_by(ID_PROG, ECE) %>% 
+  count() 
+ECE_temp_site_plot <- ECE_temp_site %>% 
+  pivot_wider(names_from = ECE, values_from = n) %>% 
+  mutate(true = replace_na(true, 0)) %>% 
+  mutate(perc_ECE = true/(true + false))
+
+## Spatial  
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+
+# fond de carte
+france <- map_data("france")
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                 panel.background = element_rect(colour = NA),
+                 plot.background = element_rect(colour = NA),
+                 axis.title = element_text(face = "bold",size = rel(1)),
+                 axis.title.y = element_text(angle=90,vjust =2),
+                 axis.title.x = element_text(vjust = -0.2),
+                 legend.position=NULL)
+
+## SPEI
+# Add coordinates
+data_model <- read.csv("C:/git/STOC/variables/data/model/data_model.csv")
+ECE_temp_site_plot <- ECE_temp_site_plot %>% 
+  left_join(data_model[,c("ID_PROG", "LON", "LAT")]) %>% 
+  distinct()
+
+# All years
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = ECE_temp_site_plot, aes(LON,LAT, colour=perc_ECE),size=2)
+gg <- gg + scale_color_gradient2(midpoint=0.07,  low="#fee5d9", mid="#fb6a4a", high="#99000d", space = "Lab")
+gg <- gg + labs(colour = "% of years with spring \n temperature anomalies > 1.35")
+plot(gg)
+
+
+```
+
+### Add ECE variables to the df model  
+
+```{r}
+df_mod <- fread("C:/git/STOC/Variables/data/model/df_model_final.csv")
+
+# Add binary variables
+df_mod <- df_mod %>% 
+  left_join(ECE_spei[,c("Year", "ID_PROG", "ECE")], by = c("ID_PROG", "YEAR" = "Year")) %>% 
+  rename(ECE_spei = ECE) %>% 
+  left_join(ECE_temp[,c("an", "ID_PROG", "ECE")], by = c("ID_PROG", "YEAR" = "an")) %>% 
+  rename(ECE_temp = ECE)
+
+# Add continuous variables  
+# nb of ECE days  
+
+# nb of consecutive ECE days  
+nbECE <- fread("C:/git/STOC/Variables/data/model/nb_ece.csv")
+nb3ECEcons <- fread("C:/git/STOC/Variables/data/model/nb3ECEcons.csv") 
+
+df_mod <- df_mod %>% 
+  left_join(nbECE, by = c("ID_PROG", "YEAR" = "an")) %>% 
+  left_join(nb3ECEcons, by = c("ID_PROG", "YEAR" = "an"))
+
+#replace NAs by 0  
+df_mod <- df_mod %>% 
+  mutate(nb_ECE_aTemp = replace_na(nb_ECE_aTemp, 0), nb_ECE_SPEI = replace_na(nb_ECE_SPEI, 0)) %>% 
+  mutate(ECE3temp = replace_na(ECE3temp, 0), ECE3SPEI = replace_na(ECE3SPEI, 0))  
+
+write.csv(df_mod, file = "C:/git/STOC/Variables/data/model/df_model_final_ECE.csv", row.names = FALSE)
+```
+

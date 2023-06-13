@@ -1,0 +1,1991 @@
+---
+title: "steps MuMIn"
+author: "Nathalie Adenot"
+date: "2023-05-15"
+output: html_document
+---
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(glmmTMB)
+library(MuMIn)
+```
+
+
+## Import data  
+```{r}
+var_model_scaled <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+
+```
+
+
+## Null model  
+### With no predictor  
+```{r}
+m0 <- glmmTMB(cbind(JUV, AD) ~ (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m0)
+# AIC = 126139.3
+```
+
+
+### with all species  
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m1)
+# drop1(m1)
+
+
+system.time(m1_dredge <- dredge(m1, trace = 2), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m1_dredge)
+
+# sum of weights  
+sw(m1_dredge)
+
+
+# # top model from our dredging
+# top_model <- get.models(m1_dredge, subset = 1)[[1]]
+# summary(top_model)
+# 
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m1_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m1_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m1_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m1_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+# options(na.action = "na.omit") # set back to default
+```
+
+mean NDVI is not in the best model, but it is in the 2nd best model that is almost as good as the best model.  
+There is no doubt on whether to keep Temperature, BAL and density (AIC weigths >0.99), but the AIC weight for NDVI is only 35%.  
+But I will keep it for the rest of the analyses.  
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+plot_model(m1, type = "pred", terms = "mean_BAL", axis.lim = c(0.15, 0.6)) 
+plot_model(m1, type = "pred", terms = "mean_T", axis.lim = c(0.15, 0.6)) 
+plot_model(m1, type = "pred", terms = "meanNDVI", axis.lim = c(0.15, 0.6)) 
+plot_model(m1, type = "pred", terms = "density", axis.lim = c(0.15, 0.6)) 
+
+```
+
+### with 50 species  
+```{r}
+sp_capt <- fread("C:/git/STOC/Variables/data/sp_capt.csv")
+
+var_mod50 <- var_model_scaled_noNA %>% filter(ESPECE %in% sp_capt$ESPECE[1:50])
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_mod50)
+# execution 20.41s
+
+summary(m1)
+
+
+system.time(m1_dredge <- dredge(m1, trace = 2), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 248.03s  
+
+head(m1_dredge)
+
+```
+
+### with 30 species  
+```{r}
+sp_capt <- fread("C:/git/STOC/Variables/data/sp_capt.csv")
+
+var_mod30 <- var_model_scaled_noNA %>% filter(ESPECE %in% sp_capt$ESPECE[1:30])
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_mod30)
+# execution 20.41s
+
+summary(m1)
+
+
+system.time(m1_dredge <- dredge(m1, trace = 2), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 197.09s  
+
+head(m1_dredge)
+
+```
+
+### With species as fixed effect  
+```{r}
+
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density + ESPECE +
+                (1|ID_PROG) + (1|YEAR),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m1)
+
+system.time(m1_dredge <- dredge(m1, trace = 2), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 3567.04s  
+
+```
+
+### Without species effect  
+```{r}
+m1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                (1|ID_PROG) + (1|YEAR),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m1)
+
+system.time(m1_dredge <- dredge(m1, trace = 2), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 214.82s  
+
+```
+--> The fastest is with less species (30 species), and having species as fixed factor make the analysis even longer  
+
+It gives the same result in the end.  
+
+## Climatic model  
+
+To the null model, we add the SPEI and temperature anomalies to test if climate variability has an effect on productivity.  
+
+### Spring variables  
+
+```{r}
+# load data with spring variables  
+var_model_scaled <- fread("C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv")
+```
+
+_Without interactions_  
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m2 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                mean_aT_spring + SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m2)
+
+system.time(m2_dredge <- dredge(m2, trace = 2, fixed = ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 109.80s  
+
+head(m2_dredge)
+
+# sum of weights  
+sw(m2_dredge)
+
+
+# top model from our dredging
+top_model <- get.models(m2_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m2_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m2_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m2_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+_With interactions_  
+With interactions, I use categories if temperature to make things easier to interpret. 
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+# var_model_scaled_noNA <- var_model_scaled %>% 
+#   filter(!is.na(meanNDVI)) %>% 
+#   filter(!is.na(early_SPEI))
+
+m2b <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                SPEI + mean_BAL:SPEI +
+                mean_aT_spring + cat:mean_aT_spring +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m2b)
+
+system.time(m2b_dredge <- dredge(m2b, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m2b_dredge)
+
+# sum of weights  
+sw(m2b_dredge)
+
+# top model from our dredging
+top_model <- get.models(m2b_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+# 
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m2b_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2b_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m2b_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m2b_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = "mean_aT_spring [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+# SPEI
+plot_model(top_model, type = "pred", terms = "SPEI [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+
+## Interactions  
+plot_model(top_model, type = "pred", terms = c("mean_aT_spring  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+```
+
+_Quadratic effects_  
+Even if the GAMM did not identify non-linear tendencies, we eventually decided to test for quadratic effects here, to be sure not to miss anything.  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m2c <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                SPEI + mean_BAL:SPEI + I(SPEI^2) + mean_BAL:I(SPEI^2) +
+                mean_aT_spring + cat:mean_aT_spring + cat:I(mean_aT_spring^2) + I(mean_aT_spring^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m2c)
+
+system.time(m2c_dredge <- dredge(m2c, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 1479.39s  
+
+head(m2c_dredge)
+
+# sum of weights  
+sw(m2c_dredge)
+
+# top model from our dredging
+top_model <- get.models(m2c_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+```
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = "mean_aT_spring [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+# SPEI
+plot_model(top_model, type = "pred", terms = "SPEI [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+
+## Interactions  
+plot_model(top_model, type = "pred", terms = c("mean_aT_spring  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+```
+
+
+### Early/late variables  
+
+```{r}
+# load data  
+var_model_scaled <- fread("C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv")
+```
+
+_Without interactions_  
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m3 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                early_SPEI + late_SPEI +
+                mean_aT_early + mean_aT_late + I(mean_aT_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3)
+
+system.time(m3_dredge <- dredge(m3, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 1017.98s  
+
+head(m3_dredge)
+
+# sum of weights  
+sw(m3_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m3_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m3_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m3_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+_With interactions_  
+With interactions, I use categories if temperature to make things easier to interpret. 
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m3b <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + mean_BAL:early_SPEI + mean_BAL:late_SPEI +
+                mean_aT_early + mean_aT_late + I(mean_aT_late^2) +
+                 cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3b)
+
+system.time(m3b_dredge <- dredge(m3b, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3b_dredge)
+
+# sum of weights  
+sw(m3b_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3b_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+_All quadratic terms_  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m3c <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + mean_BAL:early_SPEI + mean_BAL:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat + I(mean_aT_early^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3c)
+
+system.time(m3c_dredge <- dredge(m3c, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3c_dredge)
+
+# sum of weights  
+sw(m3c_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3c_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# model we keep: 
+top_model <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + 
+                I(early_SPEI^2) + I(late_SPEI^2) + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat + I(mean_aT_early^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(top_model, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.6))
+
+## Interactions 
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = c("mean_aT_early [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("mean_aT_late [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(top_model, type = "pred", terms = c("early_SPEI [all]", "mean_BAL"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("late_SPEI [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(top_model, type = "pred", terms = c("early_SPEI [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("late_SPEI [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+
+```
+
+
+_Interaction SPEI:cat_  
+There could also be an interaction between température and SPEI, so we will try it now:  
+I delete the interaction BAL:SPEI as it is not significant to limit the number of variables. 
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+m3d <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) + cat:I(early_SPEI^2) + cat:I(late_SPEI^2) +
+                mean_BAL:early_SPEI + mean_BAL:late_SPEI + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3d)
+
+system.time(m3d_dredge <- dredge(m3d, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3d_dredge)
+
+# sum of weights  
+sw(m3d_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3d_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(m3d, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+plot_model(m3d, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(m3d, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+
+## Interactions  
+plot_model(m3d, type = "pred", terms = c("mean_aT_early  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = c("mean_aT_late  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = c("early_SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("late_SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("early_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("late_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+```
+
+################################################################################
+### Extreme events  
+################################################################################
+
+```{r}
+# import data ECE  
+ECE <- fread("C:/git/STOC/Variables/data/model/df_model_final_ECE.csv")
+
+ECE <- ECE %>% select(YEAR, ID_PROG, ECE_spei:ECE3SPEI) %>% distinct() %>% 
+  # mutate_at(c(21:24), ~fun(c(scale(.))))
+  mutate_each_(funs(scale),vars=c(5:8))
+
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# Voir s'il faut rajouter un effet log (GAMM) 
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# --> visiblement pas de log, mais un ² pour nb_ECE_aT  
+
+# merge with data  
+var_model_scaled <- fread("C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv")
+var_model_scaled <- var_model_scaled %>% rename(nb_ECE_aTemp_scaled = nb_ECE_aTemp, nb_ECE_SPEI_scaled = nb_ECE_SPEI)
+var_model_scaled_ECE <- var_model_scaled %>% left_join(ECE, by = c("YEAR", "ID_PROG"))
+
+write.csv(var_model_scaled_ECE, file = "C:/git/STOC/Variables/data/var_model_final_allsp_scaled_ECE.csv", row.names = FALSE)
+
+```
+_Without interactions_  
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA_ECE <- var_model_scaled_ECE %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m4 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                nb_ECE_aTemp + nb_ECE_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m4)
+
+system.time(m4_dredge <- dredge(m4, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 106.89s  
+
+head(m4_dredge)
+
+# sum of weights  
+sw(m4_dredge)
+
+# top model from our dredging
+top_model <- get.models(m4_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# ECE SPEI
+plot_model(top_model, type = "pred", terms = "nb_ECE_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+
+
+```
+
+
+_log_  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+# var_model_scaled_noNA <- var_model_scaled %>%
+#   filter(!is.na(meanNDVI)) %>%
+#   filter(!is.na(early_SPEI))
+
+m4_log <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                log(nb_ECE_aTemp+0.01) + log(nb_ECE_SPEI+0.01) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA_ECE)
+
+summary(m4_log)
+
+system.time(m4_log_dredge <- dredge(m4_log, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 106.89s  
+
+head(m4_log_dredge)
+
+# sum of weights  
+sw(m4_log_dredge)
+
+# top model from our dredging
+top_model <- get.models(m4_log_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+options(na.action = "na.omit") # set back to default
+```
+### early/late  
+
+```{r}
+nb_ece <- fread("C:/git/STOC/Variables/data/model/nb_ece_early_late.csv")
+var_model_scaled <- fread("C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv")
+
+# merge  
+var_model_scaled_ECE <- var_model_scaled %>% 
+  rename(early_nb_ECE_aTemp_scaled = early_nb_ECE_aTemp, late_nb_ECE_aTemp_scaled = late_nb_ECE_aTemp, early_nb_ECE_SPEI_scaled = early_nb_ECE_SPEI, late_nb_ECE_SPEI_scaled = late_nb_ECE_SPEI) %>% left_join(nb_ece, by = c("ID_PROG", "YEAR" = "an")) #%>% 
+  # mutate(early_nb_ECE_aTemp = scale(early_nb_ECE_aTemp), late_nb_ECE_aTemp = scale(late_nb_ECE_aTemp), early_nb_ECE_SPEI = scale(early_nb_ECE_SPEI), late_nb_ECE_SPEI = scale(late_nb_ECE_SPEI))
+
+write.csv(var_model_scaled, file = "C:/git/STOC/Variables/data/model/var_model_final_allsp_scaled.csv", row.names = FALSE)
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA_ECE <- var_model_scaled_ECE %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+write.csv(var_model_scaled_noNA_ECE, file = "C:/git/STOC/Variables/data/model/var_model_final_allsp_noNA_ECE.csv", row.names = FALSE)
+
+```
+
+_Without interactions_  
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+
+m5 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                early_nb_ECE_aTemp + late_nb_ECE_aTemp + early_nb_ECE_SPEI + late_nb_ECE_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA_ECE)
+
+summary(m5)
+
+system.time(m5_dredge <- dredge(m5, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+#  494.43s  
+
+head(m5_dredge)
+
+# sum of weights  
+sw(m5_dredge)
+
+# top model from our dredging
+top_model <- get.models(m5_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+options(na.action = "na.omit") # set back to default
+```
+_With log_  
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+
+m5_log <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                log(early_nb_ECE_aTemp+0.01) + log(late_nb_ECE_aTemp+0.01) + log(early_nb_ECE_SPEI+0.01) + log(late_nb_ECE_SPEI+0.01) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA_ECE)
+
+summary(m5_log)
+
+system.time(m5_log_dredge <- dredge(m5_log, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+#  494.43s  
+
+head(m5_log_dredge)
+
+# sum of weights  
+sw(m5_log_dredge)
+
+# top model from our dredging
+top_model <- get.models(m5_log_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+options(na.action = "na.omit") # set back to default
+```
+
+_With interactions_  
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+m5b <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_nb_ECE_aTemp + late_nb_ECE_aTemp + early_nb_ECE_aTemp:cat + late_nb_ECE_aTemp:cat +
+                early_nb_ECE_SPEI + late_nb_ECE_SPEI + early_nb_ECE_SPEI:mean_BAL +late_nb_ECE_SPEI:mean_BAL +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA_ECE)
+
+summary(m5b)
+
+system.time(m5b_dredge <- dredge(m5b, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+#  584.63s  
+
+head(m5b_dredge)
+
+# sum of weights  
+sw(m5b_dredge)
+
+# top model from our dredging
+top_model <- get.models(m5b_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# ECE Temp
+plot_model(m5b, type = "pred", terms = "early_nb_ECE_aTemp [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m5b, type = "pred", terms = "late_nb_ECE_aTemp  [all]", axis.lim = c(0.15, 0.6)) 
+# ECE SPEI
+plot_model(m5b, type = "pred", terms = "early_nb_ECE_SPEI  [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m5b, type = "pred", terms = "late_nb_ECE_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+
+## Interactions
+# ECE Temp
+plot_model(m5b, type = "pred", terms = c("early_nb_ECE_aTemp [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+# plot_model(m5b, type = "int")
+plot_model(m5b, type = "pred", terms = c("late_nb_ECE_aTemp  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+# ECE SPEI
+plot_model(m5b, type = "pred", terms = c("early_nb_ECE_SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6)) 
+plot_model(m5b, type = "pred", terms = c("late_nb_ECE_SPEI [all]", "mean_BAL"), axis.lim = c(0.15, 0.6)) 
+
+
+
+```
+
+_With log_  
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+
+
+m5b <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                log(early_nb_ECE_aTemp+0.01) + log(late_nb_ECE_aTemp+0.01) + log(early_nb_ECE_SPEI+0.01) + log(late_nb_ECE_SPEI+0.01) +
+                cat:log(early_nb_ECE_aTemp+0.01) + cat:log(late_nb_ECE_aTemp+0.01) +
+                mean_BAL:log(early_nb_ECE_SPEI+0.01) + mean_BAL:log(late_nb_ECE_SPEI+0.01) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA_ECE)
+
+summary(m5b)
+
+system.time(m5b_dredge <- dredge(m5b, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+#  584.63s  
+
+head(m5b_dredge)
+
+# sum of weights  
+sw(m5b_dredge)
+
+# top model from our dredging
+top_model <- get.models(m5b_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+_GAMM_  
+I ran GAMMs on ECE variables, and it seams that the relationship with nb_ECE_SPEI is linear, while there is an optimum for nb_ECE_aTemp (only for early in the early-late).  
+
+So now I will run models with ECE variables, taking this into account (² term for aTemp), and try combinations of non-extreme variables with nb_ECE.  
+
+### Combination of ECE and non ECE  
+
+#### nb_ECE_aT  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA_ECE <- var_model_scaled_ECE %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+mod1 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                  early_SPEI + late_SPEI + I(early_SPEI^2) + I(late_SPEI^2) +
+                  early_nb_ECE_aTemp + late_nb_ECE_aTemp + I(early_nb_ECE_aTemp^2) +
+                  cat:early_nb_ECE_aTemp + cat:late_nb_ECE_aTemp + cat:I(early_nb_ECE_aTemp^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(mod1)
+
+system.time(mod1_dredge <- dredge(mod1, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density) + cond(early_SPEI) + cond(I(early_SPEI^2))), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 106.89s  
+
+head(mod1_dredge)
+
+# sum of weights  
+sw(mod1_dredge)
+
+# top model from our dredging
+top_model <- get.models(mod1_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+
+
+#### nb_ECE_SPEI  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA_ECE <- var_model_scaled_ECE %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+mod2 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                  mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                  cat:mean_aT_early + cat:mean_aT_late + cat:I(mean_aT_early^2) + cat:I(mean_aT_late^2) +
+                  early_nb_ECE_SPEI + late_nb_ECE_SPEI + 
+                  BAL:early_nb_ECE_SPEI + BAL:late_nb_ECE_SPEI + 
+                  cat:early_nb_ECE_SPEI : cat:late_nb_ECE_SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(mod2)
+
+system.time(mod2_dredge <- dredge(mod2, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density) + cond(mean_aT_early) + cond(mean_aT_late) + cond(I(mean_aT_early^2)) + cond(I(mean_aT_late^2)) +  cond(cat:mean_aT_early) + cond(cat:mean_aT_late)), gcFirst = TRUE) # trace = 2 to see the advancement  
+
+head(mod2_dredge)
+
+# sum of weights  
+sw(mod2_dredge)
+
+# top model from our dredging
+top_model <- get.models(mod2_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+
+################################################################################
+#############################      + NDVI       ################################
+################################################################################
+
+## Climatic model  
+
+To the null model, we add the SPEI and temperature anomalies to test if climate variability has an effect on productivity.  
+
+### Spring variables  
+
+```{r}
+# load data with spring variables  
+var_model_scaled <- fread("C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv")
+```
+
+_Without interactions_  
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+# var_model_scaled_noNA <- var_model_scaled %>% 
+#   filter(!is.na(meanNDVI)) %>% 
+#   filter(!is.na(early_SPEI))
+
+m2 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                mean_aT_spring + aNDVI_spring + SPEI +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m2)
+
+# Here I also fix mean_aT_spring because it was in all best models
+system.time(m2_dredge <- dredge(m2, trace = 2, fixed = ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density) + cond(mean_aT_spring)), gcFirst = TRUE) # trace = 2 to see the advancement  
+
+
+head(m2_dredge)
+
+# sum of weights  
+sw(m2_dredge)
+
+
+# top model from our dredging
+top_model <- get.models(m2_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m2_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m2_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m2_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+_With interactions_  
+With interactions, I use categories if temperature to make things easier to interpret. 
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+# var_model_scaled_noNA <- var_model_scaled %>% 
+#   filter(!is.na(meanNDVI)) %>% 
+#   filter(!is.na(early_SPEI))
+
+m2b <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                SPEI + mean_BAL:SPEI +
+                mean_aT_spring + cat:mean_aT_spring +
+                aNDVI_spring + meanNDVI:aNDVI_spring +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m2b)
+
+system.time(m2b_dredge <- dredge(m2b, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density) + cond(mean_aT_spring)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m2b_dredge)
+
+# sum of weights  
+sw(m2b_dredge)
+
+# top model from our dredging
+top_model <- get.models(m2b_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+# 
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m2b_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2b_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m2b_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m2b_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = "mean_aT_spring [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+# NDVI anomalies
+plot_model(top_model, type = "pred", terms = "aNDVI_spring [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+
+## Interactions  
+plot_model(top_model, type = "pred", terms = c("mean_aT_spring  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("aNDVI_spring  [all]", "meanNDVI"), axis.lim = c(0.15, 0.6))
+```
+
+### Early/late variables  
+
+```{r}
+# load data  
+var_model_scaled <- fread("C:/git/STOC/Variables/data/var_model_final_allsp_scaled.csv")
+```
+
+_Without interactions_  
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+
+m3 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + mean_T + meanNDVI + density +
+                early_SPEI + late_SPEI +
+                mean_aT_early + mean_aT_late + I(mean_aT_late^2) +
+                mean_aNDVI_early + mean_aNDVI_late +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3)
+
+system.time(m3_dredge <- dredge(m3, trace = 2, fixed =  ~ cond(mean_BAL) + cond(mean_T) + cond(meanNDVI) + cond(density) + cond(mean_aT_early) + cond(mean_aT_late) + cond(I(mean_aT_late^2))), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 4547.92s  
+
+head(m3_dredge)
+
+# sum of weights  
+sw(m3_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+# # averaging all models with a delta AIC <= 2
+# #  The estimates are those that were averaged across all models with a delta AIC <= 2
+# summary(model.avg(m3_dredge, subset = delta <= 2))
+# 
+# # Visualize the model selection table:
+#  if(require(graphics)) { 
+# par(mar = c(3,5,6,4))
+# plot(m2_dredge, labAsExpr = TRUE)
+#  } 
+# model.avg(m3_dredge, subset = delta < 4)
+# 
+# confset.95p <- get.models(m3_dredge, cumsum(weight) <= .95)
+# avgmod.95p <- model.avg(confset.95p)
+# summary(avgmod.95p)
+# confint(avgmod.95p)
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(m3, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m3, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.6))
+# NDVI anomalies
+plot_model(m3, type = "pred", terms = "mean_aNDVI_early [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m3, type = "pred", terms = "mean_aNDVI_late [all]", axis.lim = c(0.15, 0.6)) 
+# SPEI
+plot_model(top_model, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+
+
+```
+
+_With interactions_  
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m3b_NDVI <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + mean_BAL:early_SPEI + mean_BAL:late_SPEI +
+                mean_aT_early + mean_aT_late + I(mean_aT_late^2) +
+                 cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3b_NDVI)
+
+system.time(m3b_NDVI_dredge <- dredge(m3b_NDVI, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3b_NDVI_dredge)
+
+# sum of weights  
+sw(m3b_NDVI_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3b_NDVI_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+
+
+
+_All quadratic terms_  
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+# # delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_noNA <- var_model_scaled %>%
+  filter(!is.na(meanNDVI)) %>%
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+m3c_NDVI <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + mean_BAL:early_SPEI + mean_BAL:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat + I(mean_aT_early^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + meanNDVI:mean_aNDVI_late +
+                I(mean_aNDVI_early^2) + I(mean_aNDVI_late^2) + meanNDVI:I(mean_aNDVI_early^2) + meanNDVI:I(mean_aNDVI_late^2) +               (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3c_NDVI)
+
+system.time(m3c_NDVI_dredge <- dredge(m3c_NDVI, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density) + cond(mean_aT_early) + cond(mean_aT_late) + cond(cat:mean_aT_early) + cond(cat:mean_aT_late)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3c_NDVI_dredge)
+
+# sum of weights  
+sw(m3c_NDVI_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3c_NDVI_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# model we keep: 
+top_model <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + 
+                I(early_SPEI^2) + I(late_SPEI^2) + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat + I(mean_aT_early^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(top_model, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.6))
+
+## Interactions 
+# Temperature anomalies
+plot_model(top_model, type = "pred", terms = c("mean_aT_early [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("mean_aT_late [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(top_model, type = "pred", terms = c("early_SPEI [all]", "mean_BAL"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("late_SPEI [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(top_model, type = "pred", terms = c("early_SPEI [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(top_model, type = "pred", terms = c("late_SPEI [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+
+```
+
+
+_Interaction SPEI:cat_  
+There could also be an interaction between température and SPEI, so we will try it now:  
+I delete the interaction BAL:SPEI as it is not significant to limit the number of variables. 
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+m3d <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) + cat:I(early_SPEI^2) + cat:I(late_SPEI^2) +
+                mean_BAL:early_SPEI + mean_BAL:late_SPEI + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m3d)
+
+system.time(m3d_dredge <- dredge(m3d, trace = 2, fixed =  ~ cond(mean_BAL) + cond(cat) + cond(meanNDVI) + cond(density)), gcFirst = TRUE) # trace = 2 to see the advancement  
+# 279.52s  
+
+head(m3d_dredge)
+
+# sum of weights  
+sw(m3d_dredge)
+
+# top model from our dredging
+top_model <- get.models(m3d_dredge, subset = 1)[[1]]
+summary(top_model)
+
+# pseudo R²
+r.squaredGLMM(top_model)
+
+
+options(na.action = "na.omit") # set back to default
+```
+
+*Plot marginal effects*  
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(m3d, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.6)) # [all] to also take into account quadratic terms
+plot_model(m3d, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.6))
+# SPEI
+plot_model(m3d, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.6)) 
+
+## Interactions  
+plot_model(m3d, type = "pred", terms = c("mean_aT_early  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = c("mean_aT_late  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6)) 
+plot_model(m3d, type = "pred", terms = c("early_SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("late_SPEI  [all]", "mean_BAL"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("early_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+plot_model(m3d, type = "pred", terms = c("late_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.6))
+```
+
+
+
+
+## Combination of the main variables  
+
+I will use variables from the best model so far: 
+
+m3d <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) + cat:I(early_SPEI^2) + cat:I(late_SPEI^2) +
+                mean_BAL:early_SPEI + mean_BAL:late_SPEI + mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+
+
+m6 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + cat:I(late_SPEI^2) +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+
+s <- summary(m6)
+s
+# pseudo R²
+r.squaredGLMM(m6)
+
+
+options(na.action = "na.omit") # set back to default
+
+```
+
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+# Temperature anomalies
+plot_model(m6, type = "pred", terms = "mean_aT_early [all]", axis.lim = c(0.15, 0.45)) # [all] to also take into account quadratic terms
+plot_model(m6, type = "pred", terms = "mean_aT_late [all]", axis.lim = c(0.15, 0.45))
+# SPEI
+plot_model(m6, type = "pred", terms = "early_SPEI [all]", axis.lim = c(0.15, 0.45)) 
+plot_model(m6, type = "pred", terms = "late_SPEI [all]", axis.lim = c(0.15, 0.45)) 
+# NDVI
+plot_model(m6, type = "pred", terms = "mean_aNDVI_early [all]", axis.lim = c(0.15, 0.45)) 
+plot_model(m6, type = "pred", terms = "mean_aNDVI_late [all]", axis.lim = c(0.15, 0.45)) 
+
+## Interactions  
+plot_model(m6, type = "pred", terms = c("mean_aT_early  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.45)) 
+plot_model(m6, type = "pred", terms = c("mean_aT_late  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.45)) 
+plot_model(m6, type = "pred", terms = c("early_SPEI  [all]", "mean_BAL"), colors = c("#e66101","#000000", "#2c7bb6"), axis.lim = c(0.15, 0.45))
+plot_model(m6, type = "pred", terms = c("late_SPEI  [all]", "mean_BAL"), colors = c("#e66101","#000000", "#2c7bb6"), axis.lim = c(0.15, 0.45))
+plot_model(m6, type = "pred", terms = c("early_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.45))
+plot_model(m6, type = "pred", terms = c("late_SPEI  [all]", "cat"), colors = c("blue", "firebrick"), axis.lim = c(0.15, 0.45))
+plot_model(m6, type = "pred", terms = c("mean_aNDVI_early  [all]", "meanNDVI"), colors = c("#dff95e", "#41ab5d", "#005a32"), axis.lim = c(0.15, 0.45))
+```
+
+
+
+## Habitat  
+
+```{r}
+var_mod_hab <- fread("C:/git/STOC/Variables/data/model/var_model_allsp_scaled_hab.csv")
+
+var_mod_hab <- var_mod_hab %>% select(ID_PROG, YEAR, HABITAT) %>% distinct()
+
+var_model_scaled_ <- var_model_scaled %>% left_join(var_mod_hab)
+```
+
+### Additive model  
+
+First, I compare the model without habitat and the model with habitat:
+
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_hab_noNA <- var_model_scaled_ %>% 
+  filter(!is.na(meanNDVI)) %>% 
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI))
+
+
+
+m6_hab <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                # HABITAT +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_hab_noNA)
+# 108751.6 
+
+m6_hab <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + 
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:early_SPEI + mean_BAL:late_SPEI +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                # HABITAT +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+# 108754.1
+
+
+m6_hab <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + 
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                # HABITAT +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+# AIC = 108766.3 
+
+
+s_hab <- summary(m6_hab)
+
+```
+
+_Plot estimates_  
+
+```{r}
+# without habitat  
+coef <- as.data.frame(s[["coefficients"]][["cond"]])
+coef$var <- row.names(coef)
+  
+# barplot
+p <- ggplot(data = coef[2:21,], aes(x = var, y = Estimate)) +
+  geom_bar(stat = "identity")
+p <- p + theme(axis.text.x = element_text(angle=90))
+p
+   
+
+# with habitat  
+coef_hab <- as.data.frame(s_hab[["coefficients"]][["cond"]])
+coef_hab$var <- row.names(coef_hab)
+coef_plot <- coef_hab %>% select(Estimate, var) %>% rename(Estimate_hab = Estimate) %>% 
+  left_join(coef) %>% 
+  pivot_longer(cols = c("Estimate", "Estimate_hab"), names_to = "Model", values_to = "est")
+  
+# barplot
+p <- ggplot(data = coef_plot[3:21,], aes(x = var, y = est, fill = Model)) +
+  geom_bar(stat = "identity", position=position_dodge())
+p <- p + theme(axis.text.x = element_text(angle=90)) + labs(title = "Comparison estimates with and without habitat effect") + xlab("Variable") + ylab("Estimate") + scale_fill_discrete(labels=c('Without HABITAT', 'With HABITAT')) +
+  geom_errorbar(aes(ymin=est-`Std. Error`, ymax=est+`Std. Error`), width=.2,
+                 position=position_dodge(.9)) 
+p
+```
+
+### With interactions  
+
+```{r}
+
+m6_hab_int <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early + meanNDVI:mean_aNDVI_late +
+                HABITAT +
+                mean_BAL:HABITAT + cat + meanNDVI:HABITAT + density:HABITAT +
+                early_SPEI:HABITAT + late_SPEI:HABITAT + cat:early_SPEI:HABITAT + cat:late_SPEI +
+                I(early_SPEI^2):HABITAT + I(late_SPEI^2):HABITAT +
+                # mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early:HABITAT + mean_aT_late:HABITAT + I(mean_aT_early^2):HABITAT + I(mean_aT_late^2):HABITAT +
+                # cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat
+                mean_aNDVI_early:HABITAT + mean_aNDVI_late:HABITAT +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_hab_noNA)
+
+s_int <- summary(m6_hab_int)
+
+```
+_plot_ 
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+
+## Interactions  
+plot_model(m6_hab_int, type = "pred", terms = c("meanNDVI  [all]", "HABITAT"), axis.lim = c(0.15, 0.6)) 
+plot_model(m6_hab_int, type = "pred", terms = c("density  [all]", "HABITAT"), axis.lim = c(0.15, 0.6)) 
+plot_model(m6_hab_int, type = "pred", terms = c("mean_BAL  [all]", "HABITAT"), axis.lim = c(0.15, 0.6)) 
+plot_model(m6_hab_int, type = "pred", terms = c("mean_aT_early  [all]", "HABITAT"), axis.lim = c(0.15, 0.6)) 
+plot_model(m6_hab_int, type = "pred", terms = c("mean_aT_late  [all]", "HABITAT"), axis.lim = c(0.15, 0.6)) 
+plot_model(m6_hab_int, type = "pred", terms = c("early_SPEI  [all]", "HABITAT"), axis.lim = c(0.15, 0.6))
+plot_model(m6_hab_int, type = "pred", terms = c("late_SPEI  [all]", "HABITAT"), axis.lim = c(0.15, 0.6))
+plot_model(m6_hab_int, type = "pred", terms = c("mean_aNDVI_early  [all]", "HABITAT"), axis.lim = c(0.15, 0.6))
+plot_model(m6_hab_int, type = "pred", terms = c("mean_aNDVI_late  [all]", "HABITAT"), axis.lim = c(0.15, 0.6))
+
+```
+
+
+_ggpredict_  
+
+https://strengejacke.github.io/ggeffects/articles/ggeffects.html
+
+```{r}
+library(ggeffects)
+ggpred <- ggpredict(m6_hab_int, terms = c("HABITAT", "early_SPEI"))
+print(ggpred)
+plot(ggpred)
+
+var_mod <- c("mean_BAL", "cat", "meanNDVI", "density",
+                "early_SPEI", "late_SPEI",
+                "mean_aT_early", "mean_aT_late",
+                "mean_aNDVI_early", "mean_aNDVI_late")
+for(x in var_mod){
+  ggpred <- ggpredict(m6_hab_int, terms = c(x, "HABITAT"))
+  png(paste0("C:/git/STOC/Variables/output/hab/", x, ".png"))
+  plot(ggpred)
+  dev.off()
+}
+
+```
+
+_Plot estimates_  
+
+The estimate for aquatic habitat corresponds to the intercept, and the estimate for terrestrial habitat corresponds to the intercept + estimate (cf https://stats.stackexchange.com/questions/527093/how-do-i-obtain-the-estimate-for-each-level-of-an-interaction-term-containing-a)
+```{r}
+
+# with interaction habitat  
+coef_int <- as.data.frame(s_int[["coefficients"]][["cond"]])
+coef_int$var <- row.names(coef_int)
+coef_int <- coef_int %>% #filter(grepl("HABITAT", var) & nchar(var)>16) %>%
+  mutate(var_int = ifelse(grepl("HABITAT", var, fixed = TRUE) & nchar(var)>16, substr(var,1, nchar(var)-17), var)) %>% 
+  mutate(hab = ifelse(grepl("HABITAT", var, fixed = TRUE), "HABITATTerrestre", "aquatic"))
+
+# hab terrestrial
+coef_terr <- coef_int %>% filter(hab != "aquatic") %>% select(1,2, 6) %>% #mutate(hab = "terrestre") %>% 
+  rename(Estimate_diff = Estimate) %>% 
+  rename(se_terr = `Std. Error`)
+  
+# Hab aquatic
+coef_aqua <- coef_int %>% 
+  # pivot_wider(names_from = hab, values_from = Estimate)
+  filter(hab == "aquatic") %>% 
+  rename(Estimate_aqua = Estimate) %>% 
+  rename(se_aqua = `Std. Error`) %>% 
+  select(1,2, 6)
+
+coef_all <- coef_terr %>% 
+  left_join(coef_aqua) %>% 
+  mutate(Estimate_terr = Estimate_aqua + Estimate_diff)
+est_all <- coef_all %>% 
+  select(var_int, Estimate_aqua, Estimate_terr) %>% 
+  pivot_longer(cols = c("Estimate_aqua", "Estimate_terr"), names_to = "hab", values_to = "estimate" ) %>% 
+  mutate(hab = gsub("Estimate_", "", hab))
+
+se_all <- coef_all %>% 
+  select(var_int, se_aqua, se_terr) %>% 
+  pivot_longer(cols = c("se_aqua", "se_terr"), names_to = "hab", values_to = "se" ) %>% 
+  mutate(hab = gsub("se_", "", hab))
+
+coef_all <- est_all %>% left_join(se_all, by = c("var_int", "hab"))
+
+# without habitat  
+coef_no_hab <- coef %>% 
+  mutate(hab = "no_hab") %>% 
+  select(var, hab, Estimate, `Std. Error`) %>% 
+  rename(var_int = var, estimate = Estimate, se = `Std. Error`) %>% 
+  filter(var_int %in% coef_all$var_int)
+
+coef_all <- coef_all %>% 
+  rbind(coef_no_hab) %>% 
+  filter(var_int != "HABITATTerrestre")
+
+# barplot
+p <- ggplot(data = coef_all, aes(x = var_int, y = estimate, fill = hab)) +
+  geom_bar(stat = "identity", position=position_dodge())
+p <- p + theme(axis.text.x = element_text(angle=90)) + labs(title = "Comparison estimates between habitats") + xlab("Variable") + ylab("Estimate")  + scale_fill_discrete(limits = c("no_hab", "terr", "aqua"), labels=c('Without HABITAT', "Terrestrial", 'Aquatic')) +
+  geom_errorbar(aes(ymin=estimate-se, ymax=estimate+se), width=.2,
+                 position=position_dodge(.9)) 
+p
+   
+# 
+# # with habitat  
+# coef_hab <- as.data.frame(s_hab[["coefficients"]][["cond"]])
+# coef_hab$var <- row.names(coef_hab)
+# coef_plot <- coef_hab %>% select(Estimate, var) %>% rename(Estimate_hab = Estimate) %>% 
+#   left_join(coef) %>% 
+#   pivot_longer(cols = c("Estimate", "Estimate_hab"), names_to = "Model", values_to = "est")
+#   
+# # barplot
+# p <- ggplot(data = coef_plot[3:21,], aes(x = var, y = est, fill = Model)) +
+#   geom_bar(stat = "identity", position=position_dodge())
+# p <- p + theme(axis.text.x = element_text(angle=90)) + labs(title = "Comparison estimates with and without habitat effect") + xlab("Variable") + ylab("Estimate")# + scale_fill_discrete(labels=c('Without HABITAT', 'With HABITAT'))
+# p
+```
+
+
+## Phenology  
+
+```{r}
+var_model_scaled_pheno <- fread("C:/git/STOC/Variables/data/model/var_model_50sp_scaled_pheno.csv")
+
+var_model_scaled_pheno <- var_model_scaled_pheno %>% select(ID_PROG, YEAR, ESPECE, pheno, a_pheno) %>% 
+  left_join(var_model_scaled)
+
+```
+```{r}
+
+options(na.action = "na.fail") # Required for dredge to run
+
+# delete all years-site-species with NA for NDVI or SPEI
+var_model_scaled_pheno_noNA <- var_model_scaled_pheno %>% 
+  filter(!is.na(meanNDVI)) %>% 
+  filter(!is.na(early_SPEI)) %>% 
+  filter(!is.na(early_nb_ECE_SPEI)) %>% 
+  mutate(a_pheno_scaled = scale(a_pheno))
+
+# without pheno
+m6_pheno <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                # a_pheno_scaled +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_pheno_noNA)
+
+
+s <- summary(m6_pheno)
+
+
+# with pheno
+m6_pheno <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_early^2):cat + I(mean_aT_late^2):cat +
+                a_pheno_scaled +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_pheno_noNA)
+
+
+s_pheno <- summary(m6_pheno)
+
+# pseudo R²
+r.squaredGLMM(m6_pheno)
+
+```
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+# data(efc)
+theme_set(theme_sjplot())
+
+
+## Interactions  
+plot_model(m6_pheno, type = "pred", terms = "a_pheno_scaled", axis.lim = c(0.15, 0.6)) 
+
+```
+
+_Plot comparison additive model_  
+```{r}
+# without pheno  
+coef <- as.data.frame(s[["coefficients"]][["cond"]])
+coef$var <- row.names(coef)
+  
+# barplot
+p <- ggplot(data = coef[2:21,], aes(x = var, y = Estimate)) +
+  geom_bar(stat = "identity")
+p <- p + theme(axis.text.x = element_text(angle=90))
+p
+   
+
+# with pheno  
+coef_pheno <- as.data.frame(s_pheno[["coefficients"]][["cond"]])
+coef_pheno$var <- row.names(coef_pheno)
+coef_plot <- coef_pheno %>% select(Estimate, var) %>% rename(Estimate_pheno = Estimate) %>% 
+  left_join(coef) %>% 
+  pivot_longer(cols = c("Estimate", "Estimate_pheno"), names_to = "Model", values_to = "est")
+  
+# barplot
+p <- ggplot(data = coef_plot[3:21,], aes(x = var, y = est, fill = Model)) +
+  geom_bar(stat = "identity", position=position_dodge())
+p <- p + theme(axis.text.x = element_text(angle=90)) + labs(title = "Comparison estimates with and without phenology effect") + xlab("Variable") + ylab("Estimate") + scale_fill_discrete(labels=c('Without pheno', 'With pheno'))
+p
+```
+
+
+
+### Without late  
+
+As results for the late period are hardly exploitable and don't have a biological meaning, I will try removing late variables from the model and see how worse is the AIC.  
+
+```{r}
+
+m6_early <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + cat:early_SPEI + I(early_SPEI^2) + mean_BAL:I(early_SPEI^2) +
+                mean_aT_early + I(mean_aT_early^2) + cat:mean_aT_early + 
+                mean_aNDVI_early + meanNDVI:mean_aNDVI_early +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m6_early)
+# AIC = 108850.2
+
+```
+The best model's AIC is 108768.3. So even if this early model is the 3rd best model among those I tried (the 2nd best is the early/late with interactions and quadratic without NDVI), there is still a delta AIC = 81.9.  
+
+
+### With NDVI but not SPEI  
+
+```{r}
+m6_NDVI <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+summary(m6_NDVI)
+# AIC = 108865.1
+```
+
+
+
+
+################################################################################
+##############################      THV      ###################################
+################################################################################
+
+I want to plot effects for categories of traits that are significantly different according to brms.  
+
+```{r}
+
+m6_hab_sp <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + #cat:I(late_SPEI^2) +
+                # I(early_SPEI^2) + I(late_SPEI^2) +
+                # mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late +# I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late +# I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                HABITAT_SP +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+
+
+```
+
+```{r}
+options(na.action = "na.fail") # Required for dredge to run
+
+var_model_scaled_noNA$MIGRATION <- as.factor(var_model_scaled_noNA$MIGRATION)
+
+
+m6 <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + cat:I(late_SPEI^2) +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                MIGRATION +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+
+s <- summary(m6)
+s
+# pseudo R²
+r.squaredGLMM(m6)
+
+
+options(na.action = "na.omit") # set back to default
+
+```
+
+_Plot_  
+
+```{r}
+library(ggeffects)
+
+ggpred <- ggpredict(m6_hab_sp,terms = c("mean_aT_late", "HABITAT_SP"))
+print(ggpred)
+plot(ggpred)
+
+
+```
+
+### Migration
+```{r}
+var_model_scaled_noNA$MIGRATION <- as.factor(var_model_scaled_noNA$MIGRATION)
+
+m6_migr_sp <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + #cat:I(late_SPEI^2) +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                MIGRATION + MIGRATION:early_SPEI + MIGRATION:I(early_SPEI^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+ggpred <- ggeffects::ggpredict(m6_migr_sp,terms = c("early_SPEI", "MIGRATION"))
+print(ggpred)
+  
+png(filename = "C:/git/STOC/Variables/output/brms/migr_earlySPEI22.png", width = 400, height = 250, units = "px")
+plot(ggpred)
+dev.off()
+
+summary(m6_migr_sp)
+
+```
+
+
+### Habitat 
+
+```{r}
+var_model_scaled_noNA$HABITAT_SP <- as.factor(var_model_scaled_noNA$HABITAT_SP)
+
+m6_hab_sp <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + #cat:I(late_SPEI^2) +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                HABITAT_SP + HABITAT_SP:late_SPEI + HABITAT_SP:mean_aT_late + 
+                HABITAT_SP:I(late_SPEI^2) + HABITAT_SP:I(mean_aT_late^2) +
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled_noNA)
+
+ggpred <- ggeffects::ggpredict(m6_hab_sp,terms = c("late_SPEI", "HABITAT_SP"))
+plot(ggpred)
+  
+png(filename = "C:/git/STOC/Variables/output/brms/hab_lateSPEI2.png", width = 400, height = 250, units = "px")
+plot(ggpred)
+dev.off()
+
+ggpred <- ggeffects::ggpredict(m6_hab_sp,terms = c("mean_aT_late", "HABITAT_SP"))
+plot(ggpred)
+  
+png(filename = "C:/git/STOC/Variables/output/brms/hab_aT_late2.png", width = 400, height = 250, units = "px")
+plot(ggpred)
+dev.off()
+
+summary(m6_migr_sp)
+
+```
+
+
+### Broods NDVI 
+
+
+```{r}
+# import broods
+
+thv <- fread("C:/git/STOC/Variables/data/THV/THV_all_sp.csv")
+thv <- thv %>% select(ESPECE, `Broods per year`)
+var_model_scaled <- var_model_scaled %>% left_join(thv)
+
+m6_hab_sp <- glmmTMB(cbind(JUV, AD) ~ mean_BAL + cat + meanNDVI + density +
+                early_SPEI + late_SPEI + cat:early_SPEI + cat:late_SPEI + #cat:I(late_SPEI^2) +
+                I(early_SPEI^2) + I(late_SPEI^2) +
+                mean_BAL:I(early_SPEI^2) + mean_BAL:I(late_SPEI^2) +
+                mean_aT_early + mean_aT_late + I(mean_aT_early^2) + I(mean_aT_late^2) +
+                cat:mean_aT_early + cat:mean_aT_late + I(mean_aT_late^2):cat +
+                mean_aNDVI_early + mean_aNDVI_late + meanNDVI:mean_aNDVI_early +
+                `Broods per year` + `Broods per year`:mean_aNDVI_early +  
+                (1|ID_PROG) + (1|YEAR) + (1|ESPECE),
+              family=binomial, data=var_model_scaled)
+
+ggpred <- ggeffects::ggpredict(m6_hab_sp,terms = c("mean_aNDVI_early", "Broods per year[1,2]"))
+plot(ggpred)
+  
+png(filename = "C:/git/STOC/Variables/output/brms/broods_NDVI.png", width = 400, height = 250, units = "px")
+plot(ggpred)
+dev.off()
+
+
+```
+
+

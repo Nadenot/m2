@@ -1,0 +1,1108 @@
+---
+title: "NDVI"
+output: html_document
+date: "2023-02-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I will use this file to describe how I build my NDVI variable.
+
+# Source  
+To get the NDVI data, I made a point request on AppEEARS (https://appeears.earthdatacloud.nasa.gov/) to get all NDVI values between March 1st 1989 and December 31st 2022 for all STOC stations.  
+I could do this request by giving the coordinates (latitude and longitude of the STOC stations, that can be found in the file *STOC_reporting-master/library/coord_precis.csv*).  
+I first try to get a raster with all NDVI values for France, but I didn't manage to extract the NDVI values per station so I found this easier way. But it would be better to have a raster in case new stations are created to be able to get NDVI values anywhere in France.  
+
+As discussed with PY, we decided to use the 1km spatial scale (there is also 250m and 500m) as it seemed to be more representative of the actual habitat of the birds captured at the station.  
+And we chose to get 16-day values rather than monthly values to be more flexible on the temporal window over which we want to average values.  
+So in the request I chose the layer _1_km_16_days_NDVI (MOD13A2.006)
+
+# Data exploration   
+
+```{r import data, echo=FALSE}
+# Import data (downloaded from AppEEARS)
+#16 days
+ndvi_16j <- read.csv("C:/git/STOC/variables/data/STOC-All-1989-2022-MOD13A2-006-results.csv", sep=",")
+#1 month
+ndvi_1m <- read.csv("C:/git/STOC/variables/data/STOC-All-1989-2022-MOD13A3-006-results.csv", sep=",")
+#str(ndvi)
+
+```
+
+The actual NDVI values we are interested in are in the column *MOD13A2_006__1_km_16_days_NDVI*.  
+There are also many columns characterizing the quality of the NDVI values. 
+
+## Check quality  
+**16-day values**
+```{r quality 16d, echo=FALSE}
+# Quality check 
+
+#16 days  
+ndvi <- ndvi_16j 
+library(ggplot2)
+# Proportion of quality types
+QA <- as.data.frame(table(ndvi$MOD13A2_006__1_km_16_days_VI_Quality_MODLAND_Description)/nrow(ndvi))
+colnames(QA) <- c("Quality", "Freq")
+# Change names to plot
+QA$Quality <- as.character(QA$Quality)
+QA$Quality[1] <- "Not produced"
+QA$Quality[2] <- "Cloudy"
+QA$Quality[3] <- "Medium"
+QA$Quality[4] <- "Good"
+# Barplot
+gg <- ggplot(data=QA, aes(x=Quality, y=Freq)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("Good", "Medium", "Cloudy", "Not produced"))
+gg
+
+# More detailed version
+Usefulness <- as.data.frame(table(ndvi$MOD13A2_006__1_km_16_days_VI_Quality_VI_Usefulness_Description)/nrow(ndvi))
+colnames(Usefulness) <- c("Quality", "Freq")
+# Change names to plot
+Usefulness$Quality <- as.character(Usefulness$Quality)
+Usefulness$Quality[1] <- "Not produced"
+Usefulness$Quality[2] <- "Cloudy"
+Usefulness$Quality[3] <- "Medium"
+Usefulness$Quality[4] <- "Good"
+# Barplot
+gg <- ggplot(data=Usefulness, aes(x=Quality, y=Freq)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("Highest quality", "Lower quality", "Decreasing quality (0010)", "Decreasing quality (0100)", "Decreasing quality (1000)", "Decreasing quality (1001)", "Decreasing quality (1010)", "Decreasing quality (0100)", "Decreasing quality (0101)","Decreasing quality (0110)", "Decreasing quality (0111)", "Decreasing quality (1011)", "Not useful for any other reason/not processed")) +
+  theme(axis.text.x = element_blank())
+gg
+
+```
+
+70% of values are of good quality.
+We will definitely exclude the lowest quality data: "Pixel produced, but most probably cloudy" and "Pixel not produced due to other reasons than clouds".  
+
+**Monthly values**  
+```{r quality month, echo=FALSE, eval=FALSE}
+# Quality check 
+
+#1 month  
+ndvi <- ndvi_1m 
+library(ggplot2)
+# Proportion of quality types
+QA <- as.data.frame(table(ndvi$MOD13A3_006__1_km_monthly_VI_Quality_MODLAND_Description)/nrow(ndvi))
+colnames(QA) <- c("Quality", "Freq")
+# Change names to plot
+QA$Quality <- as.character(QA$Quality)
+QA$Quality[1] <- "Not produced"
+QA$Quality[2] <- "Cloudy"
+QA$Quality[3] <- "Medium"
+QA$Quality[4] <- "Good"
+# Barplot
+gg <- ggplot(data=QA, aes(x=Quality, y=Freq)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("Good", "Medium", "Cloudy", "Not produced"))
+gg
+
+# More detailed version
+Usefulness <- as.data.frame(table(ndvi$MOD13A3_006__1_km_monthly_VI_Quality_VI_Usefulness_Description)/nrow(ndvi))
+colnames(Usefulness) <- c("Quality", "Freq")
+# Change names to plot
+Usefulness$Quality <- as.character(Usefulness$Quality)
+Usefulness$Quality[1] <- "Not produced"
+Usefulness$Quality[2] <- "Cloudy"
+Usefulness$Quality[3] <- "Medium"
+Usefulness$Quality[4] <- "Good"
+# Barplot
+gg <- ggplot(data=Usefulness, aes(x=Quality, y=Freq)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("Highest quality", "Lower quality", "Decreasing quality (0010)", "Decreasing quality (0100)", "Decreasing quality (1000)", "Decreasing quality (1001)", "Decreasing quality (1010)", "Decreasing quality (0100)", "Decreasing quality (0101)","Decreasing quality (0110)", "Decreasing quality (0111)", "Decreasing quality (1011)", "Not useful for any other reason/not processed")) +
+  theme(axis.text.x = element_blank())
+gg
+
+```
+It's slightly better but not much.
+
+
+For the rest, we will follow the approach given in the AppEEARS tutorial (https://git.earthdata.nasa.gov/projects/LPDUR/repos/appeears-tutorials/browse) and used in the papers:  
+- Kern et al. (2016). *Evaluation of the quality of NDVI3g dataset against collection 6 MODIS NDVI in Central Europe between 2000 and 2013*  
+- Samanta et al. (2010). *Amazon forests did not green‐up during the 2005 drought*. See supp. material for further justification of the quality filtering
+
+**16-day values**  
+```{r filter low quality 16j}
+# Filter low quality data
+# Exclude poor quality based on MODLAND
+modland <- c('VI produced, good quality', 'VI produced, but check other QA')
+QA_ndvi_16j <- ndvi_16j[ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_MODLAND_Description %in% modland,]
+
+# Include better quality VI usefulness
+VIU <- c("Lowest quality","Quality so low that it is not useful","L1B data faulty","Not useful for any other reason/not processed")
+QA_ndvi_16j <- QA_ndvi_16j[!QA_ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_VI_Usefulness_Description %in% VIU,]
+
+# Exclude climatology or high aerosol
+#aerosol climatology  indicates  that  the  actual  aerosol  content  is  unknown,  most  likely  due  to  the presence  of  clouds
+AQ <- c('Low','Average')
+QA_ndvi_16j <- QA_ndvi_16j[QA_ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_Aerosol_Quantity_Description %in% AQ,]
+
+# Include where adjacent cloud, mixed clouds, or possible shadow were not detected
+QA_ndvi_16j <- QA_ndvi_16j[QA_ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_Adjacent_cloud_detected_Description == 'No',]
+QA_ndvi_16j <- QA_ndvi_16j[QA_ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_Mixed_Clouds_Description == 'No', ]
+QA_ndvi_16j <- QA_ndvi_16j[QA_ndvi_16j$MOD13A2_006__1_km_16_days_VI_Quality_Possible_shadow_Description == 'No',]
+#head(QA_ndvi_16j)
+
+# Exclude values = -3000
+QA_ndvi_16j <- QA_ndvi_16j[QA_ndvi_16j$MOD13A2_006__1_km_16_days_NDVI > -3000,]
+
+percent <- round(nrow(QA_ndvi_16j)/nrow(ndvi_16j)*100)
+paste("We kept", percent, "% of the NDVI values")
+```
+
+**Monthly values**  
+```{r filter low quality month, echo=FALSE, eval=FALSE}
+# Filter low quality data
+# Exclude poor quality based on MODLAND
+modland <- c('VI produced, good quality', 'VI produced, but check other QA')
+QA_ndvi_1m <- ndvi_1m[ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_MODLAND_Description %in% modland,]
+
+# Include better quality VI usefulness
+VIU <- c("Lowest quality","Quality so low that it is not useful","L1B data faulty","Not useful for any other reason/not processed")
+QA_ndvi_1m <- QA_ndvi_1m[!QA_ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_VI_Usefulness_Description %in% VIU,]
+
+# Exclude climatology or high aerosol
+AQ <- c('Low','Average')
+QA_ndvi_1m <- QA_ndvi_1m[QA_ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_Aerosol_Quantity_Description %in% AQ,]
+
+# Include where adjacent cloud, mixed clouds, or possible shadow were not detected
+QA_ndvi_1m <- QA_ndvi_1m[QA_ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_Adjacent_cloud_detected_Description == 'No',]
+QA_ndvi_1m <- QA_ndvi_1m[QA_ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_Mixed_Clouds_Description == 'No', ]
+QA_ndvi_1m <- QA_ndvi_1m[QA_ndvi_1m$MOD13A3_006__1_km_monthly_VI_Quality_Possible_shadow_Description == 'No',]
+#QA_ndvi_1m
+
+percent <- round(nrow(QA_ndvi_1m)/nrow(ndvi_1m)*100)
+paste("We kept", percent, "% of the NDVI values") # 85%
+```
+
+### Complete missing values  
+We want to keep a value every 16 days so when we delete a poor quality value we will replace it by the mean of the previous and following value.
+*But what do we do in case several values in a row are of poor quality?*
+
+```{r, identify missing values, echo = FALSE}
+library(lubridate)
+
+#Create unique row index ID_Date
+ndvi_16j$ID_Date <- paste(ndvi_16j$ID, ndvi_16j$Date, sep = "_")
+QA_ndvi_16j$ID_Date <- paste(QA_ndvi_16j$ID, QA_ndvi_16j$Date, sep = "_")
+
+# Values deleted for bad quality
+#setdiff(ndvi_16j$ID_Date, QA_ndvi_16j$ID_Date)
+
+#create copy to work on
+ndvi_16j_avg <- ndvi_16j
+#if low quality data, we set a new column "origin" as "inferred"
+ndvi_16j_avg$origin <- ifelse(ndvi_16j_avg$ID_Date %in% QA_ndvi_16j$ID_Date, "measured", "inferred")
+#ndvi_16j_avg[ndvi_16j$MOD13A2_006__1_km_16_days_NDVI == 0,]
+# for(i in 1:nrow(ndvi_16j_avg)){
+#   # if value was of low quality, we replace it by the mean of previous and next value
+#   if(ndvi_16j_avg$origin[i] == "inferred"){
+#     if(i>1 & i<nrow(ndvi_16j_avg)+1){
+#       if(ndvi_16j_avg$origin[i-1] != "inferred" & ndvi_16j_avg$origin[i+1] != "inferred"){
+#         ndvi_16j_avg$MOD13A2_006__1_km_16_days_NDVI[i] <- mean(c(ndvi_16j_avg$MOD13A2_006__1_km_16_days_NDVI[i-1], ndvi_16j_avg$MOD13A2_006__1_km_16_days_NDVI[i+1]))  
+#       }
+#       if(ndvi_16j_avg$origin[i-1] == "inferred" & ndvi_16j_avg$origin[i+1] == "inferred") ndvi_16j_avg$origin <- "can't be inferred"
+#     }
+#   }
+# }
+```
+
+
+
+### Explore thresholds  
+We will have to determine thresholds for the number and position of NA from which we don't consider a site in the analysis.  
+- *% of missing values*: among the 9 16days periods we want to consider, which % are missing values (i.e. low quality data discarded)  
+- *number of NAs in a row*: if we have 2 good values around a NA, we can infer its value by calculating the mean of the 2 surrounding values. But if several values in a row are missing, it will not be accurate. So how how many sites/year will be discarded if we keep sites without 2, 3 or more values in a row?  
+
+**% of missing values**  
+
+```{r explore missing, echo=FALSE}
+library(lubridate)
+library(tidyverse)
+library(data.table)
+
+# Only keep sites that are in data.csv
+# dataSTOC <- fread("C:/git/STOC_reporting-master/data_DB/data.csv")
+# ndvi_16j_avg <- ndvi_16j_avg %>% 
+#   filter(ID %in% dataSTOC$ID_PROG)
+
+# Calculate % of missing values per site per year
+ndvi_16j_avg_n <- ndvi_16j_avg %>% 
+  mutate(Year = year(Date)) %>% 
+  group_by(Year, ID, origin) %>% 
+  count() %>% 
+  pivot_wider(names_from = origin, values_from = n) %>% 
+  mutate(inferred = replace(inferred, is.na(inferred), 0)) %>% 
+  mutate(measured = replace(measured, is.na(measured), 0)) %>% 
+  mutate(Percent = round(inferred/(inferred+measured), digits = 2)) %>% 
+  mutate(Sum = inferred+measured)
+
+t_percent <- as.data.frame(table(ndvi_16j_avg_n$Year, ndvi_16j_avg_n$Percent))
+colnames(t_percent) <- c("Year", "per_inf", "n")
+t_percent$per_inf <- fct_rev(t_percent$per_inf) #change order for the plot
+
+# Plot
+gg <- ggplot(data = t_percent, aes(x = Year, y = n, fill = per_inf)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  scale_fill_discrete(limits = c("1", "0.89", "0.78", "0.67", "0.56", "0.44", "0.33", "0.22", "0.11", "0")) +
+  scale_fill_manual(values= c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00', '#cab2d6','#6a3d9a'))
+gg
+
+# ggfile <- "C:/git/STOC/Variables/output/plot_perc_infer.png"
+# ggsave(ggfile,gg,width=8, height=6,dpi=72)
+
+
+
+## Map  
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+# Add coordinates  
+ndvi_16j_avg_n <- left_join(ndvi_16j_avg_n, ndvi_16j_avg[,1:3])
+
+# map of % inferred for 2022
+ # fond de carte
+france <- map_data("france")
+
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                         panel.background = element_rect(colour = NA),
+                         plot.background = element_rect(colour = NA),
+                         axis.title = element_text(face = "bold",size = rel(1)),
+                         axis.title.y = element_text(angle=90,vjust =2),
+                         axis.title.x = element_text(vjust = -0.2),
+                         legend.position=NULL)
+
+for(y in 2007:2022){
+  ndvi_map2022 <- subset(ndvi_16j_avg_n, Year == y)
+
+  gg <- ggplot()
+  gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+  gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+  gg <- gg + geom_point(data = ndvi_map2022,aes(Longitude,Latitude, colour=Percent),size=2)
+  gg <- gg + labs(title= paste("% of inferred NDVI values per station in", y))
+  gg <- gg + scale_color_gradient2(midpoint=0.5,  low="blue", mid="orange",
+                  high="red")
+  plot(gg)
+# 
+#   ggfile <- paste("C:/git/STOC/Variables/output/carte",y,".png",sep="")
+#   ggsave(ggfile,gg,width=12, height=12,dpi=72)
+}
+
+# number of years a site has % inferred > 0.22
+ndvi_22 <- ndvi_16j_avg_n %>% 
+  distinct() %>% 
+  filter(Percent>0.22) %>% 
+  group_by(ID) %>% 
+  count()
+#add coordinates
+ndvi22_map <- left_join(ndvi_22, ndvi_16j_avg[,1:3])
+ndvi22_map <- distinct(ndvi22_map)
+
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = ndvi22_map,aes(Longitude,Latitude, colour=n),size=2)
+gg <- gg + labs(title= "Number of years a station has >22% of inferred NDVI values")
+gg <- gg + scale_color_gradient(low="blue",
+                  high="red")
+plot(gg)
+
+# ggfile <- "C:/git/STOC/Variables/output/carte_years_022_inf.png"
+# ggsave(ggfile,gg,width=12, height=12,dpi=72)
+```
+
+
+**Number of consecutive missing values**  
+
+```{r explore consecutive missing, echo=FALSE}
+library(lubridate)
+library(tidyverse)
+library(data.table)
+
+# Only keep sites that are in data.csv
+dataSTOC <- fread("C:/git/STOC_reporting-master/data_DB/data.csv")
+ndvi_16j_avg <- ndvi_16j_avg %>%
+  filter(ID %in% dataSTOC$ID_PROG)
+
+# Calculate number of missing values in a row per site per year
+ndvi_16j_na <- ndvi_16j_avg %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(nNA = 0)
+n <- 1 #initialize number of NA in a row, the first row is inferred
+# for each site, count NAs in a row
+for(i in 2:nrow(ndvi_16j_na)){
+  if(ndvi_16j_na$ID[i] != ndvi_16j_na$ID[i-1] | ndvi_16j_na$Year[i] != ndvi_16j_na$Year[i-1]){ #if new site or new year
+    n <- 0
+  }
+  if(ndvi_16j_na$origin[i] == "inferred")  n <- n+1
+  if(ndvi_16j_na$origin[i] != "inferred")  n <- 0
+  ndvi_16j_na$nNA[i] <- n
+}
+
+#get max value  
+mx <- ndvi_16j_na$nNA[nrow(ndvi_16j_na)]
+for(i in (nrow(ndvi_16j_na)-1):2){
+  if(ndvi_16j_na$ID[i] != ndvi_16j_na$ID[i+1] | ndvi_16j_na$Year[i] != ndvi_16j_na$Year[i+1] | ndvi_16j_na$origin[i] == "measured") mx <- ndvi_16j_na$nNA[i]
+  if(ndvi_16j_na$nNA[i] < mx & ndvi_16j_na$origin[i] == "inferred") ndvi_16j_na$nNA[i] <- mx 
+  if(ndvi_16j_na$nNA[i] > mx) mx <- ndvi_16j_na$nNA[i] 
+}
+
+ndvi_16j_na <- ndvi_16j_na %>% 
+  dplyr::select(ID, Year, nNA, Latitude, Longitude) %>% 
+  distinct()
+
+ndvi_16j_na_max <- ndvi_16j_na %>% 
+  group_by(ID, Year) %>% 
+  mutate(nNA = max(nNA)) %>% 
+  distinct()
+
+ndvi_16j_na_plot <- ndvi_16j_na_max %>% 
+  group_by(Year, nNA) %>% 
+  count() %>% 
+  mutate(nNA = as.factor(nNA))
+ndvi_16j_na_plot$nNA  <- fct_rev(ndvi_16j_na_plot$nNA)
+
+# Plot
+gg <- ggplot(data = ndvi_16j_na_plot, aes(x = Year, y = n, fill = nNA)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  scale_fill_manual(values= c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00', '#cab2d6','#6a3d9a'))
+gg
+
+# ggfile <- "C:/git/STOC/Variables/output/plot_nb_NA_cons.png"
+# ggsave(ggfile,gg,width=8, height=6,dpi=72)
+
+
+
+## Map  
+require(rgdal)
+require(ggmap)
+require(maptools)
+library(sf)
+require(maps)
+
+ # fond de carte
+france <- map_data("france")
+
+world1 <- sf::st_as_sf(map('world', plot = FALSE, fill = TRUE))
+france <- sf::st_as_sf(map('france', plot = FALSE, fill = TRUE))
+
+mytheme <- theme(plot.title = element_text(face = "bold",size = rel(1.2), hjust = 0.5),
+                         panel.background = element_rect(colour = NA),
+                         plot.background = element_rect(colour = NA),
+                         axis.title = element_text(face = "bold",size = rel(1)),
+                         axis.title.y = element_text(angle=90,vjust =2),
+                         axis.title.x = element_text(vjust = -0.2),
+                         legend.position=NULL)
+
+ndvi_16j_na_max$nNA <- as.factor(ndvi_16j_na_max$nNA)
+
+for(y in 2007:2022){
+  ndvi_map_NA <- subset(ndvi_16j_na_max, Year == y)
+
+  gg <- ggplot()
+  gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+  gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+  gg <- gg + geom_point(data = ndvi_map_NA,aes(Longitude,Latitude, colour=nNA),size=2)
+  gg <- gg + labs(title= paste("Number of consecutive inferred NDVI values per station in", y))
+  gg <- gg + scale_color_manual(values= c('#fed976','#feb24c','#fd8d3c','#fc4e2a','#e31a1c','#bd0026','#800026', '#525252', '#252525', '#000000'))
+  plot(gg)
+  
+# ggfile <- paste("C:/git/STOC/Variables/output/carte_cons_NA",y,".png",sep="")
+# ggsave(ggfile,gg,width=12, height=12,dpi=72)
+}
+
+
+# number of years a site has > 2 consecutive NA ndvi
+ndvi_2NA <- ndvi_16j_na_max %>% 
+  mutate(nNA = as.numeric(nNA)) %>% 
+  filter(nNA > 2) %>% 
+  group_by(ID, nNA) %>% 
+  count()
+
+
+
+#add coordinates
+ndvi2NA_map <- left_join(ndvi_2NA, ndvi_16j_avg[,1:3])
+ndvi2NA_map <- ndvi2NA_map %>% 
+  distinct() %>% 
+  mutate(n = as.character(n))
+
+gg <- ggplot()
+gg <- gg + geom_sf(data = world1,fill="white", colour="#7f7f7f", size=0.2)+ geom_sf(data = france,fill="white", colour="#7f7f7f", size=0.5)
+gg <- gg + coord_sf(xlim=c(-5,9),ylim=c(41.5,52))
+gg <- gg + geom_point(data = ndvi2NA_map,aes(Longitude,Latitude, colour=n),size=2)
+gg <- gg + labs(title= "Number of years a station has >2 consecutive inferred NDVI values")
+gg <- gg + scale_color_manual(values = c('#78c679','#238b45','#006d2c','#00441b', '#a6bddb','#3690c0','#0570b0','#045a8d', '#253494', '#023858','#fcc5c0','#fa9fb5','#f768a1','#dd3497','#ae017e','#7a0177','#49006a', '#4d004b', '#969696', '#737373', '#525252', '#252525', '#000000'), limits = c("1", "2", "3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23"))
+# <- gg + scale_color_gradient2(low = "#b2182b",mid="#92c5de",high = "#053061")
+plot(gg)
+
+# ggfile <- paste("C:/git/STOC/Variables/output/carte_years_2_cons_inf.png",sep="")
+# ggsave(ggfile,gg,width=12, height=12,dpi=72)
+```
+
+
+## Evolution of NDVI values  
+We want to see how NDVI values evolve during spring to see when there is the greatest variation and therefore when a missing value would be problematic.  
+
+```{r NDVI spring, echo=FALSE}
+library(lubridate)
+#import data
+#dataSTOC <- fread("C:/git/STOC_reporting-master/data_DB/data.csv")
+ndvi_16j_avg_plot <- ndvi_16j_avg %>% #ndvi_16j_avg defined in an earlier chunk
+  filter(ID %in% dataSTOC$ID_PROG) %>%
+  filter(origin == "measured") %>% 
+  mutate(JDay = as.factor(yday(Date))) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(ID_Year = paste(ID, Year, sep = "_")) %>% 
+  dplyr::select(ID_Year, MOD13A2_006__1_km_16_days_NDVI, JDay)
+
+gg <- ggplot(data = ndvi_16j_avg_plot, aes(x = JDay, y = MOD13A2_006__1_km_16_days_NDVI)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("NDVI") +
+  ggtitle("Evolution of NDVI during spring for each site_year")
+plot(gg)
+# 
+# ggfile <- paste("C:/git/STOC/Variables/output/evol_NDVI_spring.png",sep="")
+# ggsave(ggfile,gg,width=8, height=5,dpi=72)
+
+```
+
+According to this graph, it seems that there are **2 distinct periods**:  
+1. NDVI increases up to mid-May  
+2. Slight decrease in NDVI from mid-may to July  
+
+So as there is an important evolution of NDVI during the first period, we probably can't accept to have 2 consecutive missing values, and more than 2 non-consecutive NAs.  
+During the 2nd period, we could accept 2 consecutive NAs.  
+
+#### Regions  
+We want to check if this evolution is the same in the different biogeographic regions:  
+
+```{r evolution ndvi regions, echo=FALSE}
+library(data.table)
+
+# import data with biogeo regions
+d <- fread("C:/git/STOC_reporting-master/library/Regions/d_regbiogeo.csv")
+d <- d %>% 
+  dplyr::select(ID_PROG, REGBIOGEO, BIOGEOREF) %>% 
+  distinct()
+
+# Add biogeo regions to ndvi df
+ndvi_biogeo <- ndvi_16j_avg %>% 
+  mutate(ID_PROG = ID) %>% 
+  left_join(d, by = "ID_PROG")
+
+regions <- c("Atlantique_central", "Lusitanien", "Continental", "Mediterraneen")
+
+for(r in regions){
+  ndvi_reg <- ndvi_biogeo %>% 
+  filter(REGBIOGEO == r) %>%  # select sites in region
+  filter(origin == "measured") %>% # keep good quality values
+  mutate(JDay = as.factor(yday(Date))) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(ID_Year = paste(ID, Year, sep = "_")) %>% 
+  dplyr::select(ID_Year, MOD13A2_006__1_km_16_days_NDVI, JDay)
+
+  gg <- ggplot(data = ndvi_reg, aes(x = JDay, y = MOD13A2_006__1_km_16_days_NDVI)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  scale_y_continuous(name = "NDVI", limits = c(0,1)) +
+  ggtitle(paste("Evolution of NDVI during spring for each site_year in", r, "region"))
+  plot(gg)
+
+}
+
+```
+
+#### Special years  
+
+We want to see if the evolution of NDVI values is the same during very dry years (as 2020 and 2022).
+
+```{r ndvi 2020 2022, echo=FALSE}
+# 2020
+ndvi_16j_avg_plot <- ndvi_16j_avg %>% #ndvi_16j_avg defined in an earlier chunk
+  filter(ID %in% dataSTOC$ID_PROG) %>%
+  filter(origin == "measured") %>% 
+  mutate(JDay = as.factor(yday(Date))) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(ID_Year = paste(ID, Year, sep = "_")) %>% 
+  filter(Year == 2020) %>% 
+  dplyr::select(ID_Year, MOD13A2_006__1_km_16_days_NDVI, JDay)
+
+gg <- ggplot(data = ndvi_16j_avg_plot, aes(x = JDay, y = MOD13A2_006__1_km_16_days_NDVI)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("NDVI") +
+  ggtitle("Evolution of NDVI during spring for each site in 2020")
+plot(gg)
+
+# 2022
+ndvi_16j_avg_plot <- ndvi_16j_avg %>% #ndvi_16j_avg defined in an earlier chunk
+  filter(ID %in% dataSTOC$ID_PROG) %>%
+  filter(origin == "measured") %>% 
+  mutate(JDay = as.factor(yday(Date))) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(ID_Year = paste(ID, Year, sep = "_")) %>% 
+  filter(Year == 2022) %>% 
+  dplyr::select(ID_Year, MOD13A2_006__1_km_16_days_NDVI, JDay)
+
+gg <- ggplot(data = ndvi_16j_avg_plot, aes(x = JDay, y = MOD13A2_006__1_km_16_days_NDVI)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("NDVI") +
+  ggtitle("Evolution of NDVI during spring for each site in 2022")
+plot(gg)
+```
+
+There is a slightly stronger decrease in 2020 and 2022. 
+
+
+
+And we control if the tendencies we have observed considering all years are still the same if we remove 2020 and 2022.
+
+```{r}
+ndvi_16j_avg_plot <- ndvi_16j_avg %>% #ndvi_16j_avg defined in an earlier chunk
+  filter(ID %in% dataSTOC$ID_PROG) %>%
+  filter(origin == "measured") %>% 
+  mutate(JDay = as.factor(yday(Date))) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(ID_Year = paste(ID, Year, sep = "_")) %>% 
+  filter(Year != 2020 & Year != 2022) %>% 
+  dplyr::select(ID_Year, MOD13A2_006__1_km_16_days_NDVI, JDay)
+
+gg <- ggplot(data = ndvi_16j_avg_plot, aes(x = JDay, y = MOD13A2_006__1_km_16_days_NDVI)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("NDVI") +
+  ggtitle("Evolution of NDVI during spring for each site without 2020 and 2022")
+plot(gg)
+```
+
+
+
+
+
+
+We now want to see when are the NA: do they concentrate in early spring? Are they equally spread during the period of interest?  
+
+```{r NDVI spring NAs, echo=FALSE}
+library(tidyverse)
+library(lubridate)
+
+ndvi_NA_spring <- ndvi_16j_avg %>% 
+  mutate(JDay = as.factor(yday(Date))) %>%
+  group_by(JDay) %>% 
+  count()
+# 8947 obs / JDay
+ndvi_NA_spring <- ndvi_16j_avg %>% 
+  mutate(JDay = as.factor(yday(Date))) %>%
+  group_by(JDay, origin) %>% 
+  count() %>% 
+  mutate(perc_NA = n/8947) %>% 
+  filter(origin == "measured")
+
+gg <- ggplot(ndvi_NA_spring, aes(x = JDay, y = perc_NA)) +
+      geom_bar(stat = "identity") +
+  geom_text(aes(label = round(perc_NA, 2), vjust=-0.3)) +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date") +
+  ylab("% de valeurs exploitables")
+gg
+```
+
+There is no strong pattern here. 
+
+#### Quantify NAs and sites lost when using our criterias  
+1st part: max 2 NAs, no consecutive NAs  
+2nd part: max 2 NAs, consecutive or not  
+
+**Sites lost when using our criteria**  
+
+```{r criteria, echo=FALSE}
+# Count NAs in each part
+ndvi_ <- ndvi_16j_avg %>% 
+  dplyr::select(ID, Date, MOD13A2_006__1_km_16_days_NDVI, origin) %>% 
+  rename(NDVI = MOD13A2_006__1_km_16_days_NDVI) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(Year_ID = paste(Year, ID, sep = "_")) %>% 
+  mutate(Period = ifelse(test = yday(Date) < 135, "early", "late")) %>%   #135 = 15/05
+  mutate(Year_ID_Period = paste(Year_ID, Period, sep = "_"))
+
+
+# Calculate number of consecutive missing values per site per year
+ndvi_na <- ndvi_ %>% 
+  mutate(nNA = 0)
+n <- 1 #initialize number of NA in a row, the first row is inferred
+# for each site, count NAs in a row
+for(i in 2:nrow(ndvi_na)){
+  if(ndvi_na$Year_ID_Period[i] != ndvi_na$Year_ID_Period[i-1]){ #if new site or new year or period
+    n <- 0
+  }
+  if(ndvi_na$origin[i] == "inferred")  n <- n+1
+  if(ndvi_na$origin[i] != "inferred")  n <- 0
+  ndvi_na$nNA[i] <- n
+}
+
+#get max value  
+mx <- ndvi_na$nNA[nrow(ndvi_na)]
+for(i in (nrow(ndvi_na)-1):2){
+  if(ndvi_na$Year_ID_Period[i] != ndvi_na$Year_ID_Period[i+1] | ndvi_na$origin[i] == "measured") mx <- ndvi_na$nNA[i]
+  if(ndvi_na$nNA[i] < mx & ndvi_na$origin[i] == "inferred") ndvi_na$nNA[i] <- mx 
+  if(ndvi_na$nNA[i] > mx) mx <- ndvi_na$nNA[i] 
+}
+ndvi_na$nNA[1] <- ndvi_na$nNA[2]
+
+
+## Only keep stations on years when they were active  
+# Determine which sites where active each year  
+Sites_year <- dataSTOC %>% 
+  dplyr::select(ID_PROG, YEAR) %>% 
+  distinct() %>% 
+  mutate(Year_ID = paste(YEAR, ID_PROG, sep = "_")) 
+
+# Number of active sites each year  
+n_active_sites <- Sites_year %>% 
+  group_by(YEAR) %>% 
+  count()
+n_active_sites2000 <- n_active_sites %>%  #We only have NDVI from 2000
+  filter(YEAR>1999) %>% 
+  rename(Year = YEAR) %>% 
+  mutate(Year = as.factor(Year))
+
+# Delete rows when sites where not active
+ndvi_na_active <- ndvi_na %>% 
+  filter(Year_ID %in% Sites_year$Year_ID)
+
+# Delete site_Year if nNA(early) > 1 and nNA(late)>2
+# nNA = number of consecutive NAs
+ndvi_na_crit <- ndvi_na_active %>% 
+  mutate(discard = ifelse((Period == "early" & nNA>1)|(Period == "late" & nNA>2), "discard", "")) 
+  
+## site_Years to discard on the consecutive NA criteria
+Year_ID_discard <- ndvi_na_crit %>% 
+  group_by(Year_ID, discard) %>% 
+  count() %>% 
+  filter(discard == "discard")
+
+
+## site_Years to discard on the NA number criteria
+ndvi_crit <- ndvi_ %>% 
+  group_by(Year_ID, Period, origin) %>% 
+  count() %>% 
+  mutate(discard = ifelse(n>2 & origin == "inferred", "discard", "")) 
+
+# site_Years to discard on both criteria
+Year_ID_discard_n <- ndvi_crit %>% 
+  group_by(Year_ID, discard) %>% 
+  count() %>% 
+  filter(discard == "discard") %>% 
+  rbind(Year_ID_discard)
+
+# Site_Years to discard
+site_year_discard <- Year_ID_discard_n %>%
+  distinct(Year_ID) %>% 
+  as.data.frame() %>% 
+  filter(Year_ID %in% Sites_year$Year_ID)
+
+
+# Number of sites discarded per year
+site_year_discard <- site_year_discard %>% 
+  separate(col = Year_ID, into = c("Year", "ID"), sep = "_", remove = FALSE) 
+sites_year <- site_year_discard %>% 
+  group_by(Year) %>% 
+  count()
+## Plot number of sites to discard per year  
+gg <- ggplot(sites_year, aes(x = Year, y = n)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  ggtitle(label = "Number of sites discarded according to our criteria", subtitle = ">2 NAs early spring, >2 consecutive NAs late spring")
+plot(gg)
+
+# % of sites discarded per year  
+colnames(sites_year)[2] <- "n_discarded"
+sites_year <- sites_year %>% 
+  rename(n_discarded = n) %>% 
+  mutate(Year = as.factor(Year)) %>% 
+  left_join(n_active_sites2000) %>% 
+  mutate(perc_discarded = round(n_discarded/n,2)*100)
+## Plot number of sites to discard per year  
+gg <- ggplot(sites_year, aes(x = Year, y = perc_discarded)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  ylab(label = "% sites discarded") +
+  ggtitle(label = "Proportion of sites discarded according to our criteria", subtitle = ">2 NAs early spring, >2 consecutive NAs late spring")
+plot(gg)
+
+#Site_Years to keep
+keep <- setdiff(unique(ndvi_na_active$Year_ID), site_year_discard$Year_ID)
+# Number of sites we keep
+site_year_keep <- ndvi_ %>% 
+  filter(Year_ID %in% keep) %>% 
+  dplyr::select(Year, ID) %>% 
+  distinct() %>% 
+  group_by(Year) %>% 
+  count()
+## Plot number of sites per year we keep for the analyses  
+gg <- ggplot(site_year_keep, aes(x = Year, y = n)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  ggtitle(label = "Number of sites we keep according to our criteria", subtitle = ">2 NAs early spring, >2 consecutive NAs late spring")
+plot(gg)
+```
+
+
+**%NAs inferred when using our criteria**
+```{r NAs inferred after criteria, echo=FALSE}
+## Per year
+ndvi_inf <- ndvi_ %>% 
+  filter(Year_ID %in% keep) %>% 
+  group_by(Year, origin) %>% 
+  count() %>% 
+  pivot_wider(names_from = origin, values_from = n) %>% 
+  mutate(Percent = round(inferred/(inferred+measured), digits = 2))
+
+#plot
+gg <- ggplot(ndvi_inf, aes(x = Year, y = Percent*100)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  ylab("% NAs") +
+  ggtitle(label = "% of NAs inferred per year", subtitle = "after filtering according to our criteria")
+plot(gg)
+
+
+## Per month  
+ndvi_inf <- ndvi_ %>% 
+  filter(Year_ID %in% keep) %>% 
+  mutate(JDay = yday(Date)) %>% 
+  group_by(JDay, origin) %>% 
+  count() %>% 
+  pivot_wider(names_from = origin, values_from = n) %>% 
+  mutate(Percent = round(inferred/(inferred+measured), digits = 2))
+
+#plot
+gg <- ggplot(ndvi_inf, aes(x = JDay, y = Percent*100)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle=90)) +
+  ylab("% NAs") +
+  ggtitle(label = "% of NAs inferred per date", subtitle = "after filtering according to our criteria") +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  geom_text(aes(label = paste(round(Percent*100, 2), "%", sep = ""), vjust=-0.3))
+plot(gg)
+
+
+```
+
+
+### Simulations  
+To check the robustness of our inferred values, we will simulate our worst case scenario (2 missing values, but not consecutive in the 1st period; 2 NAs in the 2nd period)
+--> Pour les stations qui n'ont pas de données manquantes
+  --> Simuler des NA à différents endroits (selon notre critère)
+  --> remplacer les NA par la moyenne des valeurs de part et d'autre
+  --> calculer l'écart relatif à la valeur réelle: (NDVIinf - NDVIréel)/NDVIréel
+  --> plot la distribution de ces écarts  
+  
+```{r simulations, echo=FALSE}
+# Keep only sites for which there are no NA  
+sites_sim <- ndvi_16j_avg_n %>% #nddvi_avg_n defined l. 266, chunk "explore missing"
+  filter(inferred == 0) %>% 
+  mutate(Year_ID = paste(Year, ID, sep = "_"))
+
+# Get NDVI values for these sites and years
+ndvi_sim <- ndvi_16j %>% 
+  dplyr::select(ID, Date, MOD13A2_006__1_km_16_days_NDVI) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(Year_ID = paste(Year, ID, sep = "_")) %>% 
+  filter(Year_ID %in% sites_sim$Year_ID) %>% 
+  mutate(Period = ifelse(test = yday(Date) < 135, "early", "late")) %>%   #135 = 15/05
+  mutate(Year_ID_Period = paste(Year_ID, Period, sep = "_"))
+
+
+# To infer the 1st value, we need the previous NDVI value (beginning of march)
+# new version, starts earlier to be able to infer a value beginning of April
+ndvi_extended <- read.csv("C:/git/STOC/variables/data/EVI-MOD13A2-061-results.csv", sep = ",")
+# we are only interested in values before what we already have (before Julian day 74)
+ndvi_extended <- ndvi_extended %>% 
+  filter(yday(Date) < 74) %>% 
+  dplyr::select(ID, Date, MOD13A2_061__1_km_16_days_NDVI) %>% 
+  rename(MOD13A2_006__1_km_16_days_NDVI = MOD13A2_061__1_km_16_days_NDVI) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(Year_ID = paste(Year, ID, sep = "_")) %>% 
+  filter(Year_ID %in% sites_sim$Year_ID) %>% 
+  mutate(Period = ifelse(test = yday(Date) < 135, "early", "late")) %>%   #135 = 15/05
+  mutate(Year_ID_Period = paste(Year_ID, Period, sep = "_")) %>% 
+  rbind(ndvi_sim) %>% 
+  rename(NDVI = MOD13A2_006__1_km_16_days_NDVI) %>% 
+  arrange(by = Year_ID_Period) %>% 
+  filter(NDVI > -3000)
+
+## Simulate NAs
+
+n <- 1 # count early value row
+ndvi_extended <- ndvi_extended %>% 
+      mutate(sim = NDVI)     # We add a column for simulated ndvi values
+
+# non consecutive NAs among 4 values so we have either 1-3; 2-4 or 1-4 (+1 beginning of March)
+scenarios <- list(c(2,4),c(3,5),c(2,5))
+# pick randomly a scenario among the 3 possible
+sc <- scenarios[sample(1:3, 1)]
+for(i in 1:nrow(ndvi_extended)){ #pour chaque site_année 
+  if(ndvi_extended$Period[i] == "early"){ #early breeding season
+    # early breeding period: simulate 2 NAs but not consecutive
+    if(i > 1){
+      if(ndvi_extended$Year_ID_Period[i] == ndvi_extended$Year_ID_Period[i-1]){
+      n <- n+1
+      } else{
+            # pick a new scenario for each site
+          sc <- scenarios[sample(1:3, 1)]
+          n <- 1
+      } 
+    } 
+    if(n %in% sc[[1]]) ndvi_extended$sim[i] <- NA
+  }
+  if(ndvi_extended$Period[i] == "late"){ # Late breeding season: 2 NAs, consecutive or not
+    if(i > 1){
+      if(ndvi_extended$Year_ID_Period[i] == ndvi_extended$Year_ID_Period[i-1]){
+      n <- n+1
+      } else{
+            # pick a new scenario for each site
+          if(is.na(ndvi_extended$sim[i-1])) sc <- sample(2:4, 2) else sc <- sample(1:4, 2)
+          #doesn't consider last value in July (used ti infer mean)
+          # if the last value of "early" is NA, we don't want to have 3 NAs in a row
+          n <- 1
+        } 
+    }
+    if(n %in% sc) ndvi_extended$sim[i] <- NA
+  }  
+}
+
+ndvi_extended <- ndvi_extended %>% 
+  mutate(inf = ifelse(is.na(sim),"inferred", "measured"))
+
+## Complete missing values
+for(i in 1:nrow(ndvi_extended)){
+  if(is.na(ndvi_extended$sim[i])){
+    prev <- ifelse(is.na(ndvi_extended$sim[i-1]), ndvi_extended$sim[i-2], ndvi_extended$sim[i-1])
+    suiv <- ifelse(is.na(ndvi_extended$sim[i+1]), ndvi_extended$sim[i+2], ndvi_extended$sim[i+1])
+    ndvi_extended$sim[i] <- (prev + suiv)/2
+  }
+}
+
+# Calculate correlation between observed and inferred values
+ndvi_extended <- ndvi_extended %>%
+  mutate(cor = (sim-NDVI)/NDVI)
+
+# Plot distribution of corr
+ndvi_extended_plot <- ndvi_extended %>% 
+  filter(inf == "inferred")
+
+library(ggplot2)
+gg <- ggplot(ndvi_extended_plot, aes(x=cor)) + 
+  geom_histogram(binwidth=0.05) +
+  scale_x_continuous(limits = c(-1,1))
+gg
+
+summary(ndvi_extended_plot$cor)
+
+## Proportion of values with écart relatif <0.1:
+n_estimates <- nrow(ndvi_extended_plot)
+ndvi_extended_good <- ndvi_extended_plot %>% 
+  filter(cor >=-0.1 & cor <=0.1)
+
+prop_good <- nrow(ndvi_extended_good)/n_estimates
+print(paste(round(prop_good, 2)*100,"% of inferred values differ by less than 10% from measured values."))
+
+n_estimates <- nrow(ndvi_extended_plot)
+ndvi_extended_good <- ndvi_extended_plot %>% 
+  filter(cor >=-0.2 & cor <=0.2)
+prop_good <- nrow(ndvi_extended_good)/n_estimates
+print(paste(round(prop_good, 2)*100,"% of inferred values differ by less than 20% from measured values."))
+
+n_estimates <- nrow(ndvi_extended_plot)
+ndvi_extended_good <- ndvi_extended_plot %>% 
+  filter(cor >=-0.15 & cor <=0.15)
+prop_good <- nrow(ndvi_extended_good)/n_estimates
+print(paste(round(prop_good, 2)*100,"% of inferred values differ by less than 15% from measured values."))
+
+
+## 95% Interval  
+library(miscset)
+confint(ndvi_extended_plot$cor, level = 0.95, ret.attr = TRUE)
+#[-0.001035 ; 0.0026757]
+
+
+```
+  
+Estimations of NDVI seem to be rather good, but in some cases the "écart relatif" is > |1|. 
+I would like to see what causes these wrong estimations, if it is due to a specific pattern in the evolution of NDVI values. 
+
+```{r explore bad estimates, echo=FALSE}
+# select bad estimates  
+ndvi_bad_est <- ndvi_extended_plot %>% 
+  filter(cor <-1 & cor >1)
+
+ndvi_extended_sim <- ndvi_extended %>% 
+  rename(measured = NDVI) %>% 
+  pivot_longer(cols = c("measured", "sim"), names_to = "type", values_to = "NDVI")
+
+# Plot the evolution of NDVI for these years and sites  
+for(i in 1:nrow(ndvi_bad_est)){
+  t <- subset(ndvi_extended_sim, Year_ID == ndvi_bad_est$Year_ID[i])
+  gg <- ggplot(t, aes(x = as.factor(yday(Date)), y = NDVI, color = type, shape = type, size = type)) + 
+    geom_point() +
+    scale_size_manual(values=c(3,2)) +
+    scale_shape_manual(values=c(16, 3)) +
+    scale_x_discrete(labels = c("06/03","22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date") 
+  plot(gg)
+}
+
+```
+The bad estimations of NDVI using the mean to infer missing values are due to important variations in NDVI, not following the global pattern we have seen using all sites and years. 
+
+
+#### Plot écart relatif for each period  
+Is the inferred NDVI more biased during certain time periods? 
+
+```{r time plot écart relatif }
+ndvi_extended_plot <- ndvi_extended_plot %>% 
+  mutate(JDay = yday(Date))
+
+
+gg <- ggplot(data = ndvi_extended_plot, aes(x = as.factor(JDay), y = cor)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("écart relatif") +
+  ggtitle("Ecart relatif des valeurs de NDVI simulées \n par rapport aux mesurées pour chaque quinzaine")
+plot(gg)
+
+gg <- ggplot(data = ndvi_extended_plot, aes(x = as.factor(JDay), y = cor)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("22/03", "07/04", "23/04", "09/05", "25/05", "10/06", "26/06", "12/07", "28/07"), name = "Date")+
+  ylab("écart relatif") +
+  scale_y_continuous(limits = c(-2,2)) +
+  ggtitle("Ecart relatif des valeurs de NDVI simulées \n par rapport aux mesurées pour chaque quinzaine (Zoom)")
+plot(gg)
+
+```
+
+
+#### Create dataframe for the analyses  
+
+If we keep our criteria (2 non consecutive NAs max in early breeding, 2 NAs max in late breeding) we get:
+
+```{r create df model, echo=FALSE}
+
+# To infer the 1st value, we need the previous NDVI value (beginning of march)
+# new version, starts earlier to be able to infer a value beginning of April
+ndvi_mod <- read.csv("C:/git/STOC/variables/data/EVI-MOD13A2-061-results.csv", sep = ",") #138780 rows
+
+### count sites and years
+ndvi_mod_sites <- ndvi_mod %>% 
+  # mutate(YEAR = lubridate::year(Date)) %>% 
+  select(ID) %>% 
+  distinct()
+#614 sites  
+ndvi_mod_years <- ndvi_mod %>% 
+  mutate(YEAR = lubridate::year(Date)) %>% 
+  select(ID, YEAR) %>% 
+  distinct() %>% 
+  group_by(ID) %>% 
+  count()
+# 23 ans
+
+# we are only interested in values before what we already have (before Julian day 74)
+ndvi_mod <- ndvi_mod %>% 
+  dplyr::select(ID, Date, MOD13A2_061__1_km_16_days_NDVI) %>% 
+  rename(NDVI = MOD13A2_061__1_km_16_days_NDVI) %>% 
+  mutate(Year = year(Date)) %>% 
+  mutate(Year_ID = paste(Year, ID, sep = "_")) %>% 
+  mutate(Period = ifelse(test = yday(Date) < 135, "early", "late")) %>%   #135 = 15/05
+  mutate(Year_ID_Period = paste(Year_ID, Period, sep = "_")) %>% 
+  arrange(by = Year_ID_Period) %>% 
+  filter(NDVI > -3000) # 136281 rows
+
+## Delete NDVI values of poor quality  
+toNA <- ndvi_16j_avg %>% 
+  dplyr::select(ID_Date, origin) %>% 
+  filter(origin == "inferred")
+
+ndvi_mod <- ndvi_mod %>% 
+  mutate(ID_Date = paste(ID, Date, sep = "_")) %>% 
+  mutate(NDVI = ifelse(ID_Date %in% toNA$ID_Date, NA, NDVI)) 
+
+## Discard sites that don't meet the criteria  
+ndvi_mod <- ndvi_mod %>% 
+  filter(Year_ID %in% keep) #keep defined l.706, chunk r criteria
+
+## Complete NAs
+for(i in 1:nrow(ndvi_mod)){
+  if(is.na(ndvi_mod$NDVI[i])){
+    prev <- ifelse(is.na(ndvi_mod$NDVI[i-1]), ndvi_mod$NDVI[i-2], ndvi_mod$NDVI[i-1])
+    suiv <- ifelse(is.na(ndvi_mod$NDVI[i+1]), ndvi_mod$NDVI[i+2], ndvi_mod$NDVI[i+1])
+    ndvi_mod$NDVI[i] <- (prev + suiv)/2
+  }
+}
+
+# Now we can delete the 1st value of March
+ndvi_mod <- ndvi_mod %>% 
+  filter(yday(Date) > 74)
+
+# write.csv(ndvi_mod[,1:6], file = "C:/git/STOC/Variables/data/ndvi_mod.csv", row.names = FALSE) 
+
+```
+
+
+### Habitats  
+
+In the models, we have seen that the productivity declines when NDVI is high, which is counter intuitive. This is without the random effect species, so it might be due to the habitatn with aquatic species showing lower productivity.  So I will fist check visually whether there is a difference in NDVI between habitats. 
+
+```{r habitast}
+ndvi <- fread("C:/git/STOC/Variables/data/ndvi_mod.csv")
+all <- fread("C:/git/STOC/Variables/data/model/data_all_var.csv")
+hab <- fread("C:/git/STOC_reporting-master/library/reg_biogeo.csv")
+
+#add habitat 
+hab <- hab %>% 
+  mutate(ID_PROG = as.numeric(gsub("\\D", "", NEW.ID_PROG)))  #only keep numeric part
+   
+ndvi <- ndvi %>% 
+  rename(ID_PROG = ID) %>% 
+  left_join(hab[,c("ID_PROG", "HABITAT")])
+
+# all_SYLATR <- all %>% 
+#   left_join(hab[,c("ID_PROG", "HABITAT")]) %>% 
+#   filter(ESPECE == "SYLATR")
+
+# Plot NDVI
+gg <- ggplot(data = ndvi, aes(x = HABITAT, y = NDVI)) +
+  geom_boxplot()
+gg
+# # mean NDVI
+# gg <- ggplot(data = all_SYLATR, aes(x = HABITAT, y = mNDVI)) +
+#   geom_boxplot()
+# gg
+```
+
+
+## Time period  
+
+We are only interested in NDVI values during spring, from April to mid- (or end) July.
+
+```{r, echo=FALSE}
+#plot(x = ndvi$Date, y = ndvi$MOD13A2_006__1_km_16_days_NDVI)
+```
+
+
+
+
+
+
+
